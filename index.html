@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>勤怠打刻システム</title>
+<style>
+  :root {
+    --bg: #eef2f7;
+    --card: #ffffff;
+    --text: #1c2733;
+    --sub: #64748b;
+    --primary: #2563eb;
+    --primary-soft: #dbeafe;
+    --green: #16a34a;
+    --green-soft: #dcfce7;
+    --red: #dc2626;
+    --red-soft: #fee2e2;
+    --orange: #ea580c;
+    --orange-soft: #ffedd5;
+    --purple: #7c3aed;
+    --purple-soft: #ede9fe;
+    --border: #dbe2ea;
+    --shadow: 0 2px 8px rgba(15, 35, 60, .08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", sans-serif;
+    background: var(--bg); color: var(--text);
+    -webkit-user-select: none; user-select: none;
+  }
+  button { font-family: inherit; cursor: pointer; border: none; border-radius: 14px; }
+  button:active { transform: scale(.97); }
+  input, select {
+    font-family: inherit; font-size: 16px; padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 8px; background: #fff;
+    -webkit-user-select: auto; user-select: auto;
+  }
+  h2 { font-size: 20px; margin-bottom: 12px; }
+  h3 { font-size: 16px; margin: 20px 0 8px; }
+
+  /* ================= 打刻画面 ================= */
+  #view-punch { display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding: 12px 20px 8px; }
+
+  .punch-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  #office-name { font-size: 18px; font-weight: 700; color: var(--sub); }
+  #working-badge {
+    font-size: 15px; font-weight: 600; color: var(--green);
+    background: var(--green-soft); padding: 6px 16px; border-radius: 999px;
+  }
+  #working-badge.zero { color: var(--sub); background: #e6ebf2; }
+
+  .clock-area { text-align: center; padding: 4px 0 12px; }
+  #clock-time {
+    font-size: clamp(40px, 9vw, 76px); font-weight: 800; letter-spacing: 3px;
+    font-variant-numeric: tabular-nums; line-height: 1.1;
+  }
+  #clock-date { font-size: clamp(15px, 2.5vw, 20px); color: var(--sub); font-weight: 500; }
+
+  #kana-tabs {
+    display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 10px;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  #kana-tabs::-webkit-scrollbar { display: none; }
+  #kana-tabs button {
+    flex: 1 0 auto; min-width: 56px; padding: 12px 14px; font-size: 17px; font-weight: 700;
+    background: #fff; color: var(--sub); border: 1.5px solid var(--border); border-radius: 12px;
+  }
+  #kana-tabs button.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+  #staff-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+    gap: 12px; flex: 1; align-content: start; overflow-y: auto; padding-bottom: 8px;
+  }
+  .staff-btn {
+    background: var(--card); border: 2px solid transparent; border-radius: 16px;
+    padding: 16px 10px; min-height: 104px;
+    display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 8px;
+    box-shadow: var(--shadow);
+  }
+  .staff-btn .name { font-size: 22px; font-weight: 700; line-height: 1.2; }
+  .staff-btn .chip {
+    font-size: 13px; font-weight: 600; padding: 4px 12px; border-radius: 999px;
+    background: #eef1f5; color: #9aa6b5;
+  }
+  .staff-btn.working { border-color: var(--green); }
+  .staff-btn.working .chip { background: var(--green-soft); color: var(--green); }
+  .staff-btn.resting { border-color: var(--orange); }
+  .staff-btn.resting .chip { background: var(--orange-soft); color: var(--orange); }
+  .staff-btn.done .chip { background: #e6ebf2; color: var(--sub); }
+
+  .punch-footer { display: flex; justify-content: center; padding-top: 4px; }
+  .link-btn { background: none; color: #9aa6b5; font-size: 14px; padding: 10px 24px; }
+
+  .empty-hint {
+    grid-column: 1 / -1; text-align: center; padding: 48px 16px;
+    color: var(--sub); font-size: 16px; line-height: 2;
+  }
+
+  /* ================= モーダル共通 ================= */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(15, 25, 40, .5);
+    display: flex; align-items: center; justify-content: center; z-index: 100; padding: 20px;
+  }
+  .modal {
+    background: #fff; border-radius: 20px; padding: 28px;
+    width: 100%; max-width: 520px; max-height: 92vh; overflow-y: auto;
+    box-shadow: 0 12px 40px rgba(15, 35, 60, .25);
+  }
+  .modal h2 { text-align: center; font-size: 30px; margin-bottom: 4px; }
+  .modal .today-log {
+    font-size: 15px; color: var(--sub); text-align: center; margin: 10px 0 20px; line-height: 1.8;
+  }
+  .punch-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .punch-actions button {
+    padding: 26px 8px; font-size: 24px; font-weight: 800; color: #fff; border-radius: 16px;
+  }
+  .punch-actions button:disabled { opacity: .2; cursor: default; transform: none; }
+  .btn-in { background: var(--green); }
+  .btn-out { background: var(--red); }
+  .btn-break-start { background: var(--orange); }
+  .btn-break-end { background: var(--purple); }
+  .modal-cancel {
+    display: block; margin: 20px auto 0; background: #eef1f5; color: var(--sub);
+    font-size: 17px; font-weight: 600; padding: 14px 44px;
+  }
+
+  /* 誤打刻ガード */
+  .guard-text { text-align: center; font-size: 18px; line-height: 1.8; margin: 8px 0 20px; }
+  .guard-actions { display: flex; gap: 14px; }
+  .guard-actions button { flex: 1; padding: 18px; font-size: 19px; font-weight: 700; }
+  .guard-yes { background: var(--primary); color: #fff; }
+  .guard-no { background: #eef1f5; color: var(--text); }
+
+  /* ================= 打刻完了フィードバック ================= */
+  #done-overlay {
+    position: fixed; inset: 0; z-index: 300; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(255, 255, 255, .75); backdrop-filter: blur(4px);
+  }
+  .done-card {
+    background: #fff; border-radius: 24px; padding: 40px 56px; text-align: center;
+    box-shadow: 0 16px 48px rgba(15, 35, 60, .22);
+    animation: pop .25s ease-out;
+  }
+  @keyframes pop { from { transform: scale(.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .done-icon {
+    width: 88px; height: 88px; border-radius: 50%; margin: 0 auto 16px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 48px; color: #fff;
+  }
+  .done-name { font-size: 28px; font-weight: 800; margin-bottom: 6px; }
+  .done-action { font-size: 36px; font-weight: 800; letter-spacing: 2px; }
+  .done-time { font-size: 22px; color: var(--sub); margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+  /* ================= 管理画面 ================= */
+  #view-admin { display: none; min-height: 100vh; padding: 16px; max-width: 1100px; margin: 0 auto; }
+  .admin-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+  .admin-tabs { display: flex; gap: 4px; margin-bottom: 0; flex-wrap: wrap; }
+  .admin-tabs button {
+    padding: 12px 20px; font-size: 15px; background: #e2e8f0; color: var(--sub); border-radius: 12px 12px 0 0;
+  }
+  .admin-tabs button.active { background: var(--primary); color: #fff; font-weight: 600; }
+  .panel { background: var(--card); border-radius: 0 12px 12px 12px; padding: 18px; box-shadow: var(--shadow); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; background: #fff; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; white-space: nowrap; }
+  th { background: #f1f5f9; font-weight: 600; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .table-wrap { overflow-x: auto; }
+  .warn { color: var(--red); font-weight: 600; }
+  .muted { color: var(--sub); }
+  .primary-btn { background: var(--primary); color: #fff; padding: 10px 20px; font-size: 15px; font-weight: 600; }
+  .danger-btn { background: var(--red); color: #fff; padding: 6px 12px; font-size: 13px; }
+  .small-btn { background: #e2e8f0; color: var(--text); padding: 8px 14px; font-size: 13px; }
+  .form-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  .form-row label { min-width: 180px; font-size: 14px; }
+  .note { font-size: 13px; color: var(--sub); line-height: 1.8; margin: 8px 0; }
+
+  /* ダッシュボード */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 4px 0 16px; }
+  .card { background: #f8fafc; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .card .card-label { font-size: 12px; color: var(--sub); }
+  .card .card-value { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .card .card-unit { font-size: 13px; font-weight: 600; color: var(--sub); margin-left: 2px; }
+  .card.alert { background: var(--red-soft); border-color: var(--red); }
+  .card.alert .card-value { color: var(--red); }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: var(--primary-soft); }
+  .ot-warn { color: var(--orange); font-weight: 700; }
+  .ot-over { color: var(--red); font-weight: 700; }
+  .alert-link { background: var(--red-soft); color: var(--red); padding: 6px 12px; font-size: 13px; font-weight: 600; margin: 2px 4px 2px 0; }
+
+  /* 出勤簿 */
+  .day-sat { color: var(--primary); }
+  .day-sun, .day-holiday { color: var(--red); }
+  td.mark-cell select { font-size: 13px; padding: 4px 6px; }
+  tr.row-fix td { background: var(--red-soft) !important; }
+  tr.totals td { background: #f1f5f9; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<!-- ================= 打刻画面 ================= -->
+<div id="view-punch">
+  <div class="punch-header">
+    <div id="office-name"></div>
+    <div id="working-badge"></div>
+  </div>
+  <div class="clock-area">
+    <div id="clock-time">--:--:--</div>
+    <div id="clock-date"></div>
+  </div>
+  <div id="kana-tabs"></div>
+  <div id="staff-grid"></div>
+  <div class="punch-footer">
+    <button class="link-btn" onclick="openAdmin()">管理画面</button>
+  </div>
+</div>
+
+<!-- ================= 管理画面 ================= -->
+<div id="view-admin">
+  <div class="admin-header">
+    <h2 style="margin:0">勤怠 管理画面</h2>
+    <button class="small-btn" onclick="closeAdmin()">← 打刻画面に戻る</button>
+  </div>
+  <div class="admin-tabs">
+    <button data-tab="summary" class="active" onclick="switchTab('summary')">ダッシュボード</button>
+    <button data-tab="sheet" onclick="switchTab('sheet')">出勤簿</button>
+    <button data-tab="staff" onclick="switchTab('staff')">職員管理</button>
+    <button data-tab="settings" onclick="switchTab('settings')">設定</button>
+    <button data-tab="backup" onclick="switchTab('backup')">バックアップ</button>
+  </div>
+  <div class="panel" id="admin-panel"></div>
+</div>
+
+<!-- ================= 打刻完了 ================= -->
+<div id="done-overlay">
+  <div class="done-card">
+    <div class="done-icon" id="done-icon">✓</div>
+    <div class="done-name" id="done-name"></div>
+    <div class="done-action" id="done-action"></div>
+    <div class="done-time" id="done-time"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ================= データ管理 ================= */
+const LS_KEY = 'kintai-data-v1';
+
+const DEFAULT_DATA = {
+  staff: [],        // {id, code, name, kana, patternId, active}
+  punches: [],      // {id, staffId, type: 'in'|'out'|'breakStart'|'breakEnd', ts}
+  dayMarks: [],     // {id, staffId, date: 'YYYY-MM-DD', kind: '有給'|'公休'|'欠勤'}
+  workPatterns: [], // {id, name, start: '09:00', end: '18:00', breakMinutes} 終了<開始なら夜勤(日またぎ)
+  settings: {
+    adminPin: '0000',
+    officeName: '',
+    roundingMinutes: 1,        // 1=丸めなし, 5,10,15,30 (出勤切り上げ/退勤切り捨て)
+    standardMinutesPerDay: 480, // 所定労働時間(分)。超過分を残業として集計
+    nightStart: '22:00',
+    nightEnd: '05:00',
+    timeFormat: 'hm',          // 'hm' => 160:30 / 'decimal' => 160.5
+    csvVersion: '',            // MF給与サンプルCSVのVersion列の値
+    csvColWorkDays: '出勤日数',
+    csvColWorkTime: '労働時間',
+    csvColOvertime: '残業時間',
+    csvColNight: '深夜労働時間',
+    csvColPaidLeave: '有給日数',
+    overtimeAlertHours: 45,    // 月の残業がこれを超えたら赤表示(36協定の原則上限)
+    soundOn: true,
+    lastBackup: null,
+  },
+};
+
+let DATA = loadData();
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return structuredClone(DEFAULT_DATA);
+    const d = JSON.parse(raw);
+    d.settings = Object.assign(structuredClone(DEFAULT_DATA.settings), d.settings || {});
+    d.staff = (d.staff || []).map(s => Object.assign({ kana: '', patternId: '' }, s));
+    d.punches = d.punches || [];
+    d.dayMarks = d.dayMarks || [];
+    d.workPatterns = d.workPatterns || [];
+    return d;
+  } catch (e) {
+    alert('データの読み込みに失敗しました。バックアップから復元してください。');
+    return structuredClone(DEFAULT_DATA);
+  }
+}
+
+function saveData() {
+  localStorage.setItem(LS_KEY, JSON.stringify(DATA));
+}
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+/* ================= 日時ユーティリティ ================= */
+function pad2(n) { return String(n).padStart(2, '0'); }
+function fmtTime(d) { return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+function fmtDateKey(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+function fmtDateTimeLocal(ts) {
+  const d = new Date(ts);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+function minutesToHM(min) {
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  return h + ':' + pad2(m);
+}
+function formatDuration(min) {
+  if (DATA.settings.timeFormat === 'decimal') return (Math.round(min / 60 * 100) / 100).toFixed(2);
+  return minutesToHM(min);
+}
+function parseHM(str) { // "22:00" -> minutes from 0:00
+  const [h, m] = str.split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+/* ================= シフト構築(打刻ペアリング) ================= */
+// 職員ごとに打刻を時刻順に走査し、出勤〜退勤を1シフトにまとめる。
+// シフトの帰属日は「出勤打刻の日付」(夜勤で日をまたいでも出勤日に計上)。
+function buildShifts(staffId, fromTs, toTs) {
+  const punches = DATA.punches
+    .filter(p => p.staffId === staffId)
+    .sort((a, b) => a.ts - b.ts);
+  const shifts = [];
+  let cur = null;
+  for (const p of punches) {
+    if (p.type === 'in') {
+      if (cur) { cur.missingOut = true; shifts.push(cur); }
+      cur = { in: p.ts, out: null, breaks: [], openBreak: null, missingOut: false };
+    } else if (!cur) {
+      shifts.push({ in: null, out: p.type === 'out' ? p.ts : null, orphan: p, breaks: [], missingOut: false });
+    } else if (p.type === 'breakStart') {
+      if (!cur.openBreak) cur.openBreak = p.ts;
+    } else if (p.type === 'breakEnd') {
+      if (cur.openBreak) { cur.breaks.push([cur.openBreak, p.ts]); cur.openBreak = null; }
+    } else if (p.type === 'out') {
+      if (cur.openBreak) { cur.breaks.push([cur.openBreak, p.ts]); cur.openBreak = null; }
+      cur.out = p.ts;
+      shifts.push(cur);
+      cur = null;
+    }
+  }
+  if (cur) { cur.missingOut = !isToday(cur.in); cur.stillWorking = isToday(cur.in) || isYesterday(cur.in); shifts.push(cur); }
+  if (fromTs != null) return shifts.filter(s => (s.in ?? s.out) >= fromTs && (s.in ?? s.out) < toTs);
+  return shifts;
+}
+function isToday(ts) { return fmtDateKey(new Date(ts)) === fmtDateKey(new Date()); }
+function isYesterday(ts) {
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  return fmtDateKey(new Date(ts)) === fmtDateKey(y);
+}
+
+// 丸め: 出勤は切り上げ、退勤は切り捨て(単位=settings.roundingMinutes)
+function roundedShiftTimes(s) {
+  const unit = DATA.settings.roundingMinutes * 60000;
+  if (unit <= 60000) return { in: s.in, out: s.out };
+  return {
+    in: s.in != null ? Math.ceil(s.in / unit) * unit : null,
+    out: s.out != null ? Math.floor(s.out / unit) * unit : null,
+  };
+}
+
+// シフトの実働分数・深夜分数を計算(休憩控除後)
+function calcShift(s) {
+  if (s.in == null || s.out == null) return { worked: 0, night: 0, valid: false };
+  const r = roundedShiftTimes(s);
+  if (r.out <= r.in) return { worked: 0, night: 0, valid: false };
+  // 実働区間 = [in,out] から休憩を除いた区間の集合
+  let intervals = [[r.in, r.out]];
+  for (const [bs, be] of s.breaks) {
+    intervals = intervals.flatMap(([a, b]) => {
+      const s1 = Math.max(a, Math.min(b, bs)), e1 = Math.max(a, Math.min(b, be));
+      if (e1 <= s1) return [[a, b]];
+      const out = [];
+      if (s1 > a) out.push([a, s1]);
+      if (b > e1) out.push([e1, b]);
+      return out;
+    });
+  }
+  let worked = 0, night = 0;
+  for (const [a, b] of intervals) {
+    worked += (b - a) / 60000;
+    night += nightOverlapMinutes(a, b);
+  }
+  return { worked: Math.round(worked), night: Math.round(night), valid: true };
+}
+
+// [a,b](ms) と深夜帯(22:00-翌5:00 等)の重なり(分)
+function nightOverlapMinutes(a, b) {
+  const ns = parseHM(DATA.settings.nightStart); // 例 1320 (22:00)
+  const ne = parseHM(DATA.settings.nightEnd);   // 例 300 (5:00)
+  let total = 0;
+  // aの前日0:00から1日ずつ深夜窓を作って重なりを合算
+  const startDay = new Date(a); startDay.setHours(0, 0, 0, 0);
+  for (let d = startDay.getTime() - 86400000; d < b; d += 86400000) {
+    const windows = ns > ne
+      ? [[d + ns * 60000, d + 86400000 + ne * 60000]]  // 日をまたぐ(22:00-翌5:00)
+      : [[d + ns * 60000, d + ne * 60000]];
+    for (const [ws, we] of windows) {
+      const s = Math.max(a, ws), e = Math.min(b, we);
+      if (e > s) total += (e - s) / 60000;
+    }
+  }
+  return total;
+}
+
+// 月次集計
+function monthlySummary(staffId, year, month) { // month: 1-12
+  const from = new Date(year, month - 1, 1).getTime();
+  const to = new Date(year, month, 1).getTime();
+  const shifts = buildShifts(staffId, from, to);
+  const std = staffStdMinutes(DATA.staff.find(s => s.id === staffId));
+  const days = new Set();
+  let worked = 0, overtime = 0, night = 0, alerts = 0;
+  const perDay = {};
+  const alertDates = [];
+  for (const s of shifts) {
+    if (s.orphan || s.missingOut || s.in == null || s.out == null) {
+      if (!s.stillWorking) { alerts++; alertDates.push(fmtDateKey(new Date(s.in ?? s.out))); }
+      continue;
+    }
+    const c = calcShift(s);
+    if (!c.valid) { alerts++; alertDates.push(fmtDateKey(new Date(s.in))); continue; }
+    const key = fmtDateKey(new Date(s.in));
+    days.add(key);
+    perDay[key] = (perDay[key] || 0) + c.worked;
+    worked += c.worked;
+    night += c.night;
+  }
+  for (const key of Object.keys(perDay)) overtime += Math.max(0, perDay[key] - std);
+  const monthPrefix = year + '-' + pad2(month);
+  const paidLeave = DATA.dayMarks.filter(m =>
+    m.staffId === staffId && m.date.startsWith(monthPrefix) && m.kind === '有給').length;
+  return { workDays: days.size, worked, overtime, night, alerts, alertDates, paidLeave, perDay, shifts };
+}
+
+/* ================= 勤務体系 ================= */
+function patternOf(staff) {
+  if (!staff || !staff.patternId) return null;
+  return DATA.workPatterns.find(p => p.id === staff.patternId) || null;
+}
+function patternSpanMinutes(p) { // 開始〜終了(夜勤は日またぎ)
+  return (parseHM(p.end) - parseHM(p.start) + 1440) % 1440 || 1440;
+}
+function patternStdMinutes(p) { // 所定労働時間 = 拘束 − 休憩
+  return Math.max(0, patternSpanMinutes(p) - (p.breakMinutes || 0));
+}
+function staffStdMinutes(staff) {
+  const p = patternOf(staff);
+  return p ? patternStdMinutes(p) : DATA.settings.standardMinutesPerDay;
+}
+
+/* ================= 休暇マーク ================= */
+function markOf(staffId, dateKey) {
+  return DATA.dayMarks.find(m => m.staffId === staffId && m.date === dateKey) || null;
+}
+function setDayMark(staffId, dateKey, kind) {
+  DATA.dayMarks = DATA.dayMarks.filter(m => !(m.staffId === staffId && m.date === dateKey));
+  if (kind) DATA.dayMarks.push({ id: uid(), staffId, date: dateKey, kind });
+  saveData();
+  switchTab(currentTab);
+}
+
+/* ================= 五十音インデックス ================= */
+const KANA_ROWS = [
+  ['あ', 'あいうえおぁぃぅぇぉヴ'],
+  ['か', 'かきくけこがぎぐげご'],
+  ['さ', 'さしすせそざじずぜぞ'],
+  ['た', 'たちつてとだぢづでどっ'],
+  ['な', 'なにぬねの'],
+  ['は', 'はひふへほばびぶべぼぱぴぷぺぽ'],
+  ['ま', 'まみむめも'],
+  ['や', 'やゆよゃゅょ'],
+  ['ら', 'らりるれろ'],
+  ['わ', 'わをん'],
+];
+function toHiragana(str) {
+  return String(str || '').replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+}
+function kanaRowOf(kana) {
+  const c = toHiragana(kana).charAt(0);
+  for (const [row, chars] of KANA_ROWS) if (chars.includes(c)) return row;
+  return null;
+}
+let kanaFilter = 'all';
+
+/* ================= 打刻画面 ================= */
+function staffStatus(staffId) {
+  // 直近36時間の打刻から現在の状態を判定(夜勤の日またぎ対応)
+  const since = Date.now() - 36 * 3600000;
+  const punches = DATA.punches
+    .filter(p => p.staffId === staffId && p.ts >= since)
+    .sort((a, b) => a.ts - b.ts);
+  const last = punches[punches.length - 1];
+  if (!last) return { state: 'off', last: null };
+  if (last.type === 'in' || last.type === 'breakEnd') return { state: 'working', last };
+  if (last.type === 'breakStart') return { state: 'resting', last };
+  return { state: 'off', last };
+}
+
+const TYPE_LABEL = { in: '出勤', out: '退勤', breakStart: '休憩開始', breakEnd: '休憩終了' };
+
+function renderPunchScreen() {
+  const st = DATA.settings;
+  document.getElementById('office-name').textContent = st.officeName || '勤怠打刻';
+
+  const active = DATA.staff.filter(s => s.active);
+
+  // 勤務中バッジ
+  const workingCount = active.filter(s => staffStatus(s.id).state !== 'off' ||
+    false).filter(s => ['working', 'resting'].includes(staffStatus(s.id).state)).length;
+  const badge = document.getElementById('working-badge');
+  badge.textContent = '勤務中 ' + workingCount + '人';
+  badge.className = workingCount === 0 ? 'zero' : '';
+  badge.id = 'working-badge';
+
+  // 五十音タブ(該当職員がいる行だけ表示。職員10人以下なら非表示)
+  const tabs = document.getElementById('kana-tabs');
+  const usedRows = new Set(active.map(s => kanaRowOf(s.kana)).filter(Boolean));
+  if (active.length > 10 && usedRows.size >= 2) {
+    const items = [['all', '全員'], ...KANA_ROWS.filter(([r]) => usedRows.has(r)).map(([r]) => [r, r])];
+    if (!items.find(([v]) => v === kanaFilter)) kanaFilter = 'all';
+    tabs.style.display = 'flex';
+    tabs.innerHTML = items.map(([v, l]) =>
+      `<button class="${v === kanaFilter ? 'active' : ''}" onclick="kanaFilter='${v}';renderPunchScreen()">${l}</button>`).join('');
+  } else {
+    kanaFilter = 'all';
+    tabs.style.display = 'none';
+  }
+
+  // 職員グリッド(ふりがな順 → 未設定は登録順で後ろ)
+  const grid = document.getElementById('staff-grid');
+  grid.innerHTML = '';
+  if (active.length === 0) {
+    grid.innerHTML = '<div class="empty-hint">職員が登録されていません。<br>下の「管理画面」→「職員管理」から登録してください。</div>';
+    return;
+  }
+  const sorted = [...active].sort((a, b) => {
+    const ka = toHiragana(a.kana), kb = toHiragana(b.kana);
+    if (ka && kb) return ka.localeCompare(kb, 'ja');
+    if (ka) return -1;
+    if (kb) return 1;
+    return 0;
+  });
+  const shown = kanaFilter === 'all' ? sorted : sorted.filter(s => kanaRowOf(s.kana) === kanaFilter);
+  if (shown.length === 0) {
+    grid.innerHTML = '<div class="empty-hint">この行の職員はいません</div>';
+    return;
+  }
+  for (const s of shown) {
+    const { state, last } = staffStatus(s.id);
+    const btn = document.createElement('button');
+    let cls = 'staff-btn', chip = 'ー';
+    if (state === 'working') {
+      cls += ' working';
+      const inPunch = lastPunchOfType(s.id, 'in');
+      chip = '勤務中' + (inPunch ? ' ' + fmtTime(new Date(inPunch.ts)) + '〜' : '');
+    } else if (state === 'resting') {
+      cls += ' resting';
+      chip = '休憩中';
+    } else if (last && last.type === 'out' && isToday(last.ts)) {
+      cls += ' done';
+      chip = '退勤済 ' + fmtTime(new Date(last.ts));
+    }
+    btn.className = cls;
+    btn.innerHTML = `<span class="name">${escapeHtml(s.name)}</span><span class="chip">${escapeHtml(chip)}</span>`;
+    btn.onclick = () => openPunchModal(s);
+    grid.appendChild(btn);
+  }
+}
+function lastPunchOfType(staffId, type) {
+  const since = Date.now() - 36 * 3600000;
+  const list = DATA.punches.filter(p => p.staffId === staffId && p.type === type && p.ts >= since);
+  return list.length ? list[list.length - 1] : null;
+}
+
+function openPunchModal(staff) {
+  const { state } = staffStatus(staff.id);
+  const today = DATA.punches
+    .filter(p => p.staffId === staff.id && isToday(p.ts))
+    .sort((a, b) => a.ts - b.ts);
+  const log = today.length
+    ? today.map(p => TYPE_LABEL[p.type] + ' ' + fmtTime(new Date(p.ts))).join('　')
+    : '本日の打刻はまだありません';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h2>${escapeHtml(staff.name)} さん</h2>
+      <div class="today-log">${escapeHtml(log)}</div>
+      <div class="punch-actions">
+        <button class="btn-in" ${state !== 'off' ? 'disabled' : ''} data-type="in">出勤</button>
+        <button class="btn-out" ${state === 'off' ? 'disabled' : ''} data-type="out">退勤</button>
+        <button class="btn-break-start" ${state !== 'working' ? 'disabled' : ''} data-type="breakStart">休憩開始</button>
+        <button class="btn-break-end" ${state !== 'resting' ? 'disabled' : ''} data-type="breakEnd">休憩終了</button>
+      </div>
+      <button class="modal-cancel">キャンセル</button>
+    </div>`;
+  overlay.querySelector('.modal-cancel').onclick = () => overlay.remove();
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  overlay.querySelectorAll('.punch-actions button').forEach(b => {
+    b.onclick = () => { overlay.remove(); tryPunch(staff, b.dataset.type); };
+  });
+  document.body.appendChild(overlay);
+}
+
+// 誤打刻ガード: 直前の打刻から90秒以内は確認を挟む
+function tryPunch(staff, type) {
+  const recent = DATA.punches.filter(p => p.staffId === staff.id).sort((a, b) => a.ts - b.ts).pop();
+  if (recent && Date.now() - recent.ts < 90000) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="guard-text">さっき「${TYPE_LABEL[recent.type]}」を打刻したばかりです。<br>
+        続けて<b>「${TYPE_LABEL[type]}」</b>を打刻しますか?</div>
+        <div class="guard-actions">
+          <button class="guard-no">やめる</button>
+          <button class="guard-yes">打刻する</button>
+        </div>
+      </div>`;
+    overlay.querySelector('.guard-no').onclick = () => overlay.remove();
+    overlay.querySelector('.guard-yes').onclick = () => { overlay.remove(); punch(staff, type); };
+    document.body.appendChild(overlay);
+    return;
+  }
+  punch(staff, type);
+}
+
+function punch(staff, type) {
+  DATA.punches.push({ id: uid(), staffId: staff.id, type, ts: Date.now() });
+  saveData();
+  renderPunchScreen();
+  showDone(staff, type);
+  playSound(type);
+}
+
+/* 打刻完了の全画面フィードバック */
+const DONE_COLORS = { in: 'var(--green)', out: 'var(--red)', breakStart: 'var(--orange)', breakEnd: 'var(--purple)' };
+const DONE_MSG = { in: 'おはようございます', out: 'おつかれさまでした', breakStart: 'ごゆっくり', breakEnd: 'おかえりなさい' };
+let doneTimer = null;
+function showDone(staff, type) {
+  const ov = document.getElementById('done-overlay');
+  document.getElementById('done-icon').style.background = DONE_COLORS[type];
+  document.getElementById('done-name').textContent = staff.name + ' さん ' + DONE_MSG[type];
+  document.getElementById('done-action').textContent = TYPE_LABEL[type];
+  document.getElementById('done-time').textContent = fmtTime(new Date());
+  ov.style.display = 'flex';
+  clearTimeout(doneTimer);
+  doneTimer = setTimeout(() => { ov.style.display = 'none'; }, 2200);
+  ov.onclick = () => { ov.style.display = 'none'; };
+}
+
+/* 効果音(出勤=上昇音、退勤=下降音、休憩=単音) */
+function playSound(type) {
+  if (!DATA.settings.soundOn) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const freqs = { in: [660, 880], out: [660, 440], breakStart: [550], breakEnd: [550, 550] }[type] || [660];
+    freqs.forEach((f, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = f; o.type = 'sine';
+      g.gain.setValueAtTime(0.25, ctx.currentTime + i * 0.18);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.18 + 0.22);
+      o.connect(g).connect(ctx.destination);
+      o.start(ctx.currentTime + i * 0.18);
+      o.stop(ctx.currentTime + i * 0.18 + 0.25);
+    });
+  } catch (e) { /* 音が出ない環境でも打刻は成立させる */ }
+}
+
+function tickClock() {
+  const now = new Date();
+  document.getElementById('clock-time').textContent =
+    pad2(now.getHours()) + ':' + pad2(now.getMinutes()) + ':' + pad2(now.getSeconds());
+  const youbi = ['日', '月', '火', '水', '木', '金', '土'][now.getDay()];
+  document.getElementById('clock-date').textContent =
+    now.getFullYear() + '年' + (now.getMonth() + 1) + '月' + now.getDate() + '日(' + youbi + ')';
+}
+
+/* ================= 管理画面 ================= */
+let currentTab = 'summary';
+let adminMonth = (() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() + 1 }; })();
+let recordsStaffId = null;
+
+function openAdmin() {
+  const pin = prompt('管理用暗証番号を入力してください');
+  if (pin === null) return;
+  if (pin !== DATA.settings.adminPin) { alert('暗証番号が違います'); return; }
+  document.getElementById('view-punch').style.display = 'none';
+  document.getElementById('view-admin').style.display = 'block';
+  switchTab('summary');
+}
+function closeAdmin() {
+  document.getElementById('view-admin').style.display = 'none';
+  document.getElementById('view-punch').style.display = 'flex';
+  renderPunchScreen();
+}
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.admin-tabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tab));
+  const p = document.getElementById('admin-panel');
+  if (tab === 'summary') renderSummaryTab(p);
+  else if (tab === 'sheet') renderSheetTab(p);
+  else if (tab === 'staff') renderStaffTab(p);
+  else if (tab === 'settings') renderSettingsTab(p);
+  else if (tab === 'backup') renderBackupTab(p);
+}
+
+function monthSelectorHtml(idPrefix) {
+  const opts = [];
+  const now = new Date();
+  for (let i = 0; i < 14; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const y = d.getFullYear(), m = d.getMonth() + 1;
+    const sel = (y === adminMonth.y && m === adminMonth.m) ? 'selected' : '';
+    opts.push(`<option value="${y}-${m}" ${sel}>${y}年${m}月</option>`);
+  }
+  return `<select id="${idPrefix}-month" onchange="onMonthChange(this.value)">${opts.join('')}</select>`;
+}
+function onMonthChange(v) {
+  const [y, m] = v.split('-').map(Number);
+  adminMonth = { y, m };
+  switchTab(currentTab);
+}
+
+/* ---------- ダッシュボードタブ ---------- */
+function gotoSheet(staffId) {
+  recordsStaffId = staffId;
+  switchTab('sheet');
+}
+function renderSummaryTab(panel) {
+  const active = DATA.staff.filter(s => s.active);
+  const rows = active.map(s => {
+    const sum = monthlySummary(s.id, adminMonth.y, adminMonth.m);
+    return { staff: s, sum };
+  });
+  const totalWorked = rows.reduce((a, r) => a + r.sum.worked, 0);
+  const totalOt = rows.reduce((a, r) => a + r.sum.overtime, 0);
+  const totalAlerts = rows.reduce((a, r) => a + r.sum.alerts, 0);
+  const totalPaid = rows.reduce((a, r) => a + r.sum.paidLeave, 0);
+  const otLimit = DATA.settings.overtimeAlertHours * 60;
+  const otClass = min => min > otLimit ? 'ot-over' : (min > otLimit * 0.8 ? 'ot-warn' : '');
+
+  const alertLinks = rows.flatMap(r =>
+    r.sum.alertDates.map(d =>
+      `<button class="alert-link" onclick="gotoSheet('${r.staff.id}')">${escapeHtml(r.staff.name)} ${d.slice(5).replace('-', '/')}</button>`));
+
+  panel.innerHTML = `
+    <div class="form-row">
+      <label>対象月:</label>${monthSelectorHtml('summary')}
+      <button class="primary-btn" onclick="exportCsv()">MF給与用CSVを出力</button>
+      <button class="small-btn" onclick="exportDetailCsv()">出勤簿CSV(確認用)</button>
+    </div>
+    <div class="cards">
+      <div class="card"><div class="card-label">総労働時間</div><div class="card-value">${formatDuration(totalWorked)}</div></div>
+      <div class="card"><div class="card-label">総残業時間</div><div class="card-value">${formatDuration(totalOt)}</div></div>
+      <div class="card ${totalAlerts ? 'alert' : ''}"><div class="card-label">打刻もれ</div><div class="card-value">${totalAlerts}<span class="card-unit">件</span></div></div>
+      <div class="card"><div class="card-label">有給取得</div><div class="card-value">${totalPaid}<span class="card-unit">日</span></div></div>
+    </div>
+    ${alertLinks.length ? `<div class="note"><span class="warn">⚠ 打刻もれ(タップで出勤簿へ):</span><br>${alertLinks.join('')}</div>` : ''}
+    <div class="table-wrap"><table>
+      <tr><th>従業員番号</th><th>氏名</th><th>出勤日数</th><th>有給</th><th>労働時間</th><th>残業時間</th><th>深夜労働時間</th><th>打刻もれ</th></tr>
+      ${rows.map(r => `<tr class="clickable" onclick="gotoSheet('${r.staff.id}')">
+        <td>${escapeHtml(r.staff.code || '')}</td>
+        <td>${escapeHtml(r.staff.name)}</td>
+        <td class="num">${r.sum.workDays}</td>
+        <td class="num">${r.sum.paidLeave || ''}</td>
+        <td class="num">${formatDuration(r.sum.worked)}</td>
+        <td class="num ${otClass(r.sum.overtime)}">${formatDuration(r.sum.overtime)}</td>
+        <td class="num">${formatDuration(r.sum.night)}</td>
+        <td class="num ${r.sum.alerts ? 'warn' : ''}">${r.sum.alerts || ''}</td>
+      </tr>`).join('')}
+    </table></div>
+    <div class="note">
+      行をタップすると職員別の出勤簿が開きます。
+      残業時間は月${DATA.settings.overtimeAlertHours}時間(36協定の原則上限)を超えると<span class="ot-over">赤</span>、8割超で<span class="ot-warn">橙</span>で表示します。<br>
+      集計ルール: 労働時間=出勤〜退勤−休憩(丸め: ${DATA.settings.roundingMinutes <= 1 ? 'なし' : DATA.settings.roundingMinutes + '分単位(出勤切上げ/退勤切捨て)'})。
+      残業時間=各職員の勤務体系の所定労働時間を超えた分(未設定はデフォルト${minutesToHM(DATA.settings.standardMinutesPerDay)})。深夜=${DATA.settings.nightStart}〜${DATA.settings.nightEnd}。
+      夜勤など日をまたぐ勤務は<b>出勤した日</b>に計上します。
+    </div>`;
+}
+
+function csvEscape(v) {
+  v = String(v ?? '');
+  return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+}
+function downloadCsv(filename, rows) {
+  const bom = '﻿';
+  const csv = bom + rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function exportCsv() {
+  const st = DATA.settings;
+  if (!st.csvVersion) {
+    alert('設定タブで「CSVのVersion値」を入力してください。\n(マネーフォワード給与の「支給/控除/勤怠データインポート」画面でサンプルCSVをダウンロードし、A列Versionの値をコピーします)');
+    switchTab('settings');
+    return;
+  }
+  const active = DATA.staff.filter(s => s.active);
+  let hasAlert = false;
+  const rows = [['Version', '従業員番号', st.csvColWorkDays, st.csvColPaidLeave, st.csvColWorkTime, st.csvColOvertime, st.csvColNight]];
+  for (const s of active) {
+    const sum = monthlySummary(s.id, adminMonth.y, adminMonth.m);
+    if (sum.alerts) hasAlert = true;
+    rows.push([st.csvVersion, s.code || '', sum.workDays, sum.paidLeave, formatDuration(sum.worked), formatDuration(sum.overtime), formatDuration(sum.night)]);
+  }
+  if (hasAlert && !confirm('打刻もれがある職員がいます。そのままCSVを出力しますか?\n(打刻もれのシフトは集計から除外されています)')) return;
+  downloadCsv(`MF給与勤怠_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows);
+}
+
+function exportDetailCsv() {
+  const active = DATA.staff.filter(s => s.active);
+  const rows = [['従業員番号', '氏名', '日付', '出勤', '退勤', '休憩(分)', '実働', '深夜', '状態']];
+  for (const s of active) {
+    const sum = monthlySummary(s.id, adminMonth.y, adminMonth.m);
+    for (const sh of sum.shifts) {
+      const c = calcShift(sh);
+      const breakMin = sh.breaks.reduce((a, [x, y]) => a + (y - x) / 60000, 0);
+      rows.push([
+        s.code || '', s.name,
+        sh.in ? fmtDateKey(new Date(sh.in)) : (sh.out ? fmtDateKey(new Date(sh.out)) : ''),
+        sh.in ? fmtTime(new Date(sh.in)) : '',
+        sh.out ? fmtTime(new Date(sh.out)) : '',
+        Math.round(breakMin),
+        c.valid ? formatDuration(c.worked) : '',
+        c.valid ? formatDuration(c.night) : '',
+        sh.stillWorking ? '勤務中' : (sh.missingOut || sh.orphan || !c.valid ? '要修正' : ''),
+      ]);
+    }
+  }
+  downloadCsv(`出勤簿_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows);
+}
+
+/* ---------- 出勤簿タブ(職員別・日別明細) ---------- */
+function renderSheetTab(panel) {
+  const active = DATA.staff.filter(s => s.active);
+  if (!recordsStaffId || !active.find(s => s.id === recordsStaffId)) recordsStaffId = active[0]?.id || null;
+  if (!recordsStaffId) {
+    panel.innerHTML = '<div class="muted">職員が登録されていません。</div>';
+    return;
+  }
+  const staffOpts = active.map(s =>
+    `<option value="${s.id}" ${s.id === recordsStaffId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('');
+
+  const { y, m } = adminMonth;
+  const sum = monthlySummary(recordsStaffId, y, m);
+  const staffObj = active.find(s => s.id === recordsStaffId);
+  const pattern = patternOf(staffObj);
+  const std = staffStdMinutes(staffObj);
+
+  // 日付ごとのシフト(出勤日基準)
+  const byDay = {};
+  for (const sh of sum.shifts) {
+    const key = fmtDateKey(new Date(sh.in ?? sh.out));
+    (byDay[key] = byDay[key] || []).push(sh);
+  }
+
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const youbiName = ['日', '月', '火', '水', '木', '金', '土'];
+  let bodyRows = '';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateKey = y + '-' + pad2(m) + '-' + pad2(d);
+    const w = new Date(y, m - 1, d).getDay();
+    const dayCls = w === 0 ? 'day-sun' : (w === 6 ? 'day-sat' : '');
+    const dateLabel = `<span class="${dayCls}">${m}/${d}(${youbiName[w]})</span>`;
+    const shifts = byDay[dateKey] || [];
+
+    if (shifts.length === 0) {
+      const mark = markOf(recordsStaffId, dateKey);
+      const opts = ['', '有給', '公休', '欠勤'].map(k =>
+        `<option value="${k}" ${(mark?.kind || '') === k ? 'selected' : ''}>${k || 'ー'}</option>`).join('');
+      bodyRows += `<tr>
+        <td>${dateLabel}</td>
+        <td class="mark-cell"><select onchange="setDayMark('${recordsStaffId}','${dateKey}',this.value)">${opts}</select></td>
+        <td colspan="7"></td>
+        <td><button class="small-btn" onclick="openDayEditor('${recordsStaffId}','${dateKey}')">打刻追加</button></td>
+      </tr>`;
+      continue;
+    }
+    for (const sh of shifts) {
+      const c = calcShift(sh);
+      const breakMin = Math.round(sh.breaks.reduce((a, [x, yy]) => a + (yy - x) / 60000, 0));
+      const needFix = !sh.stillWorking && (sh.missingOut || sh.orphan || !c.valid);
+      const state = sh.stillWorking ? '勤務中' : (needFix ? '要修正' : '');
+      const ot = c.valid ? Math.max(0, c.worked - std) : 0;
+      // 遅刻・早退(勤務体系が割り当てられている場合のみ)
+      let flags = '';
+      if (pattern && c.valid && !sh.stillWorking) {
+        const expIn = new Date(y, m - 1, d).getTime() + parseHM(pattern.start) * 60000;
+        const expOut = expIn + patternSpanMinutes(pattern) * 60000;
+        const f = [];
+        if (sh.in > expIn) f.push('遅刻');
+        if (sh.out < expOut) f.push('早退');
+        if (f.length) flags = `<span class="ot-warn">${f.join('・')}</span>`;
+      }
+      const outLabel = sh.out
+        ? fmtTime(new Date(sh.out)) + (fmtDateKey(new Date(sh.out)) !== dateKey ? '<span class="muted">翌</span>' : '')
+        : 'ー';
+      bodyRows += `<tr class="${needFix ? 'row-fix' : ''}">
+        <td>${dateLabel}</td>
+        <td>出勤</td>
+        <td class="num">${sh.in ? fmtTime(new Date(sh.in)) : 'ー'}</td>
+        <td class="num">${outLabel}</td>
+        <td class="num">${breakMin ? minutesToHM(breakMin) : ''}</td>
+        <td class="num">${c.valid ? formatDuration(c.worked) : ''}</td>
+        <td class="num">${c.valid && ot ? formatDuration(ot) : ''}</td>
+        <td class="num">${c.valid && c.night ? formatDuration(c.night) : ''}</td>
+        <td class="${needFix ? 'warn' : 'muted'}">${state}${state && flags ? ' ' : ''}${flags}</td>
+        <td><button class="small-btn" onclick="openDayEditor('${recordsStaffId}','${dateKey}')">修正</button></td>
+      </tr>`;
+    }
+  }
+
+  panel.innerHTML = `
+    <div class="form-row">
+      <label>対象月:</label>${monthSelectorHtml('sheet')}
+      <label style="min-width:auto">職員:</label>
+      <select onchange="recordsStaffId=this.value;switchTab('sheet')">${staffOpts}</select>
+      <span class="muted" style="font-size:13px">${pattern
+        ? `勤務体系: ${escapeHtml(pattern.name)}(${pattern.start}〜${pattern.end}・所定${minutesToHM(std)})`
+        : `勤務体系: 未設定(デフォルト所定${minutesToHM(std)})`}</span>
+    </div>
+    <div class="table-wrap"><table>
+      <tr><th>日付</th><th>区分</th><th>出勤</th><th>退勤</th><th>休憩</th><th>実働</th><th>残業</th><th>深夜</th><th>状態</th><th>操作</th></tr>
+      ${bodyRows}
+      <tr class="totals">
+        <td colspan="5">合計(出勤${sum.workDays}日・有給${sum.paidLeave}日)</td>
+        <td class="num">${formatDuration(sum.worked)}</td>
+        <td class="num">${formatDuration(sum.overtime)}</td>
+        <td class="num">${formatDuration(sum.night)}</td>
+        <td colspan="2"></td>
+      </tr>
+    </table></div>
+    <div class="note">打刻がない日は「区分」で有給・公休・欠勤を記録できます。「修正/打刻追加」でその日の打刻を直接編集できます(夜勤の退勤は出勤日の行に表示)。</div>`;
+}
+
+/* ---------- 打刻の日別編集モーダル ---------- */
+let dayEditorCtx = null; // {staffId, dateKey}
+const PUNCH_TYPE_OPTS = t => ['in|出勤', 'out|退勤', 'breakStart|休憩開始', 'breakEnd|休憩終了']
+  .map(x => { const [v, l] = x.split('|'); return `<option value="${v}" ${v === t ? 'selected' : ''}>${l}</option>`; }).join('');
+
+function openDayEditor(staffId, dateKey) {
+  dayEditorCtx = { staffId, dateKey };
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.id = 'day-editor';
+  overlay.onclick = e => { if (e.target === overlay) closeDayEditor(); };
+  document.body.appendChild(overlay);
+  renderDayEditor();
+}
+function closeDayEditor() {
+  document.getElementById('day-editor')?.remove();
+  dayEditorCtx = null;
+  switchTab('sheet');
+}
+function renderDayEditor() {
+  const { staffId, dateKey } = dayEditorCtx;
+  const staff = DATA.staff.find(s => s.id === staffId);
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const from = new Date(y, m - 1, d).getTime();
+  const to = from + 36 * 3600000; // 翌日昼12時まで(夜勤対応)
+  const punches = DATA.punches
+    .filter(p => p.staffId === staffId && p.ts >= from && p.ts < to)
+    .sort((a, b) => a.ts - b.ts);
+  document.getElementById('day-editor').innerHTML = `
+    <div class="modal" style="max-width:640px">
+      <h2 style="font-size:22px">${escapeHtml(staff.name)}さん ${m}/${d} の打刻</h2>
+      ${punches.length ? `<div class="table-wrap"><table>
+        <tr><th>日時</th><th>種別</th><th></th></tr>
+        ${punches.map(p => `<tr>
+          <td><input type="datetime-local" value="${fmtDateTimeLocal(p.ts)}" onchange="deEditTs('${p.id}', this.value)"></td>
+          <td><select onchange="deEditType('${p.id}', this.value)">${PUNCH_TYPE_OPTS(p.type)}</select></td>
+          <td><button class="danger-btn" onclick="deDelete('${p.id}')">削除</button></td>
+        </tr>`).join('')}
+      </table></div>` : '<div class="note">この日の打刻はありません。下から追加してください。</div>'}
+      <h3>打刻を追加</h3>
+      <div class="form-row">
+        <input type="datetime-local" id="de-new-ts" value="${dateKey}T09:00">
+        <select id="de-new-type">${PUNCH_TYPE_OPTS('in')}</select>
+        <button class="primary-btn" onclick="deAddPunch()">追加</button>
+      </div>
+      <div class="note">この日の翌日昼12時までの打刻を表示しています(夜勤の退勤打刻も含む)。</div>
+      <button class="modal-cancel" onclick="closeDayEditor()">閉じる</button>
+    </div>`;
+}
+function deEditTs(id, val) {
+  const p = DATA.punches.find(p => p.id === id);
+  if (p && val) { p.ts = new Date(val).getTime(); saveData(); renderDayEditor(); }
+}
+function deEditType(id, val) {
+  const p = DATA.punches.find(p => p.id === id);
+  if (p) { p.type = val; saveData(); renderDayEditor(); }
+}
+function deDelete(id) {
+  if (!confirm('この打刻を削除しますか?')) return;
+  DATA.punches = DATA.punches.filter(p => p.id !== id);
+  saveData(); renderDayEditor();
+}
+function deAddPunch() {
+  const ts = document.getElementById('de-new-ts').value;
+  const type = document.getElementById('de-new-type').value;
+  if (!ts) { alert('日時を入力してください'); return; }
+  DATA.punches.push({ id: uid(), staffId: dayEditorCtx.staffId, type, ts: new Date(ts).getTime() });
+  saveData(); renderDayEditor();
+}
+
+/* ---------- 職員管理タブ ---------- */
+function patternSelectHtml(staff) {
+  const opts = DATA.workPatterns.map(p =>
+    `<option value="${p.id}" ${staff.patternId === p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+  return `<select onchange="editStaff('${staff.id}','patternId',this.value)">
+    <option value="">ー(デフォルト)</option>${opts}</select>`;
+}
+function renderStaffTab(panel) {
+  panel.innerHTML = `
+    <div class="table-wrap"><table>
+      <tr><th>従業員番号(MF給与)</th><th>氏名</th><th>ふりがな</th><th>勤務体系</th><th>状態</th><th></th></tr>
+      ${DATA.staff.map(s => `<tr>
+        <td><input value="${escapeHtml(s.code || '')}" style="width:110px" onchange="editStaff('${s.id}','code',this.value)"></td>
+        <td><input value="${escapeHtml(s.name)}" style="width:150px" onchange="editStaff('${s.id}','name',this.value)"></td>
+        <td><input value="${escapeHtml(s.kana || '')}" style="width:150px" placeholder="やまだ はなこ" onchange="editStaff('${s.id}','kana',this.value)"></td>
+        <td>${patternSelectHtml(s)}</td>
+        <td>${s.active ? '在籍' : '<span class="muted">非表示</span>'}</td>
+        <td><button class="small-btn" onclick="toggleStaff('${s.id}')">${s.active ? '非表示にする' : '在籍に戻す'}</button></td>
+      </tr>`).join('')}
+    </table></div>
+    <h3>職員を追加</h3>
+    <div class="form-row">
+      <input id="new-staff-code" placeholder="従業員番号" style="width:110px">
+      <input id="new-staff-name" placeholder="氏名" style="width:150px">
+      <input id="new-staff-kana" placeholder="ふりがな" style="width:150px">
+      <button class="primary-btn" onclick="addStaff()">追加</button>
+    </div>
+    <div class="note">従業員番号はマネーフォワード給与に登録されている従業員番号と一致させてください(CSV取込時の照合キーになります)。<br>
+    ふりがなを入れると打刻画面が五十音順に並び、職員が多い場合は「あかさたな」の絞り込みタブが表示されます。<br>
+    退職した職員は「非表示」にすると打刻画面から消えます(過去の勤怠データは残ります)。</div>
+
+    <h3>勤務体系</h3>
+    <div class="table-wrap"><table>
+      <tr><th>名称</th><th>開始</th><th>終了</th><th>休憩(分)</th><th>所定労働</th><th>割当人数</th><th></th></tr>
+      ${DATA.workPatterns.map(p => `<tr>
+        <td><input value="${escapeHtml(p.name)}" style="width:110px" onchange="editPattern('${p.id}','name',this.value)"></td>
+        <td><input type="time" value="${p.start}" onchange="editPattern('${p.id}','start',this.value)"></td>
+        <td><input type="time" value="${p.end}" onchange="editPattern('${p.id}','end',this.value)"></td>
+        <td><input type="number" min="0" max="480" value="${p.breakMinutes || 0}" style="width:70px" onchange="editPattern('${p.id}','breakMinutes',this.value)"></td>
+        <td class="num">${minutesToHM(patternStdMinutes(p))}${parseHM(p.end) <= parseHM(p.start) ? ' <span class="muted">(夜勤)</span>' : ''}</td>
+        <td class="num">${DATA.staff.filter(s => s.patternId === p.id).length || ''}</td>
+        <td><button class="danger-btn" onclick="deletePattern('${p.id}')">削除</button></td>
+      </tr>`).join('')}
+    </table></div>
+    <div class="form-row">
+      <input id="new-pat-name" placeholder="名称(例: 日勤A)" style="width:130px">
+      <input id="new-pat-start" type="time" value="09:00">
+      <span class="muted">〜</span>
+      <input id="new-pat-end" type="time" value="18:00">
+      <span class="muted">休憩</span>
+      <input id="new-pat-break" type="number" min="0" max="480" value="60" style="width:70px">
+      <span class="muted">分</span>
+      <button class="primary-btn" onclick="addPattern()">追加</button>
+    </div>
+    <div class="note">勤務体系を職員に割り当てると、残業計算がその職員の所定労働時間(開始〜終了−休憩)超過分になり、出勤簿に遅刻・早退が表示されます。
+    終了が開始より早い場合は夜勤(日またぎ)として扱います。未割り当ての職員は設定タブのデフォルト所定労働時間で計算します。</div>`;
+}
+function addPattern() {
+  const name = document.getElementById('new-pat-name').value.trim();
+  const start = document.getElementById('new-pat-start').value;
+  const end = document.getElementById('new-pat-end').value;
+  const brk = Math.max(0, Number(document.getElementById('new-pat-break').value) || 0);
+  if (!name) { alert('名称を入力してください'); return; }
+  if (!start || !end) { alert('開始・終了時刻を入力してください'); return; }
+  DATA.workPatterns.push({ id: uid(), name, start, end, breakMinutes: brk });
+  saveData(); switchTab('staff');
+}
+function editPattern(id, field, val) {
+  const p = DATA.workPatterns.find(p => p.id === id);
+  if (!p) return;
+  if (field === 'breakMinutes') p.breakMinutes = Math.max(0, Number(val) || 0);
+  else if (val) p[field] = field === 'name' ? val.trim() : val;
+  saveData(); switchTab('staff');
+}
+function deletePattern(id) {
+  const users = DATA.staff.filter(s => s.patternId === id).length;
+  if (!confirm('この勤務体系を削除しますか?' + (users ? `\n(${users}名に割り当て中 → デフォルトに戻ります)` : ''))) return;
+  DATA.workPatterns = DATA.workPatterns.filter(p => p.id !== id);
+  DATA.staff.forEach(s => { if (s.patternId === id) s.patternId = ''; });
+  saveData(); switchTab('staff');
+}
+function addStaff() {
+  const code = document.getElementById('new-staff-code').value.trim();
+  const name = document.getElementById('new-staff-name').value.trim();
+  const kana = document.getElementById('new-staff-kana').value.trim();
+  if (!name) { alert('氏名を入力してください'); return; }
+  DATA.staff.push({ id: uid(), code, name, kana, active: true });
+  saveData(); switchTab('staff');
+}
+function editStaff(id, field, val) {
+  const s = DATA.staff.find(s => s.id === id);
+  if (s) { s[field] = val.trim(); saveData(); }
+}
+function toggleStaff(id) {
+  const s = DATA.staff.find(s => s.id === id);
+  if (s) { s.active = !s.active; saveData(); switchTab('staff'); }
+}
+
+/* ---------- 設定タブ ---------- */
+function renderSettingsTab(panel) {
+  const st = DATA.settings;
+  panel.innerHTML = `
+    <h3 style="margin-top:0">表示</h3>
+    <div class="form-row"><label>事業所名(打刻画面に表示)</label>
+      <input id="set-office" value="${escapeHtml(st.officeName)}" placeholder="例: ○○デイサービス" style="width:240px"></div>
+    <div class="form-row"><label>打刻音</label>
+      <select id="set-sound">
+        <option value="1" ${st.soundOn ? 'selected' : ''}>鳴らす</option>
+        <option value="0" ${!st.soundOn ? 'selected' : ''}>鳴らさない</option>
+      </select></div>
+
+    <h3>集計ルール</h3>
+    <div class="form-row"><label>丸め単位</label>
+      <select id="set-rounding">
+        ${[1, 5, 10, 15, 30].map(v => `<option value="${v}" ${st.roundingMinutes === v ? 'selected' : ''}>${v === 1 ? '丸めなし(1分)' : v + '分(出勤切上げ/退勤切捨て)'}</option>`).join('')}
+      </select></div>
+    <div class="form-row"><label>デフォルト所定労働時間(1日)</label>
+      <input id="set-std" type="number" min="1" max="24" step="0.5" value="${st.standardMinutesPerDay / 60}" style="width:80px"> 時間
+      <span class="muted">(勤務体系が未設定の職員の残業計算に使用。勤務体系は職員管理タブで設定)</span></div>
+    <div class="form-row"><label>深夜帯</label>
+      <input id="set-night-start" type="time" value="${st.nightStart}"> 〜 <input id="set-night-end" type="time" value="${st.nightEnd}"></div>
+    <div class="form-row"><label>残業警告(月)</label>
+      <input id="set-ot-alert" type="number" min="1" max="100" value="${st.overtimeAlertHours}" style="width:80px"> 時間
+      <span class="muted">(超えるとダッシュボードで赤表示。36協定の原則上限は45時間)</span></div>
+
+    <h3>マネーフォワード給与 CSV設定</h3>
+    <div class="note">MF給与の「給与計算」→「メニュー」→「支給/控除/勤怠CSVインポート」で<b>サンプルCSV</b>をダウンロードし、
+    A列「Version」の値と、勤怠項目の正確な名称をここに合わせて入力してください。列名が一致しないと取り込めません。</div>
+    <div class="form-row"><label>CSVのVersion値</label><input id="set-csv-version" value="${escapeHtml(st.csvVersion)}" placeholder="例: 1.0" style="width:120px"></div>
+    <div class="form-row"><label>時間の形式</label>
+      <select id="set-time-format">
+        <option value="hm" ${st.timeFormat === 'hm' ? 'selected' : ''}>時間:分 (例 160:30)</option>
+        <option value="decimal" ${st.timeFormat === 'decimal' ? 'selected' : ''}>小数 (例 160.50)</option>
+      </select></div>
+    <div class="form-row"><label>列名: 出勤日数</label><input id="set-col-days" value="${escapeHtml(st.csvColWorkDays)}"></div>
+    <div class="form-row"><label>列名: 労働時間</label><input id="set-col-work" value="${escapeHtml(st.csvColWorkTime)}"></div>
+    <div class="form-row"><label>列名: 残業時間</label><input id="set-col-ot" value="${escapeHtml(st.csvColOvertime)}"></div>
+    <div class="form-row"><label>列名: 深夜労働時間</label><input id="set-col-night" value="${escapeHtml(st.csvColNight)}"></div>
+    <div class="form-row"><label>列名: 有給日数</label><input id="set-col-paid" value="${escapeHtml(st.csvColPaidLeave)}"></div>
+
+    <h3>管理</h3>
+    <div class="form-row"><label>管理用暗証番号</label><input id="set-pin" value="${escapeHtml(st.adminPin)}" style="width:100px"></div>
+    <div style="margin-top:16px"><button class="primary-btn" onclick="saveSettings()">設定を保存</button></div>`;
+}
+function saveSettings() {
+  const st = DATA.settings;
+  st.officeName = document.getElementById('set-office').value.trim();
+  st.soundOn = document.getElementById('set-sound').value === '1';
+  st.roundingMinutes = Number(document.getElementById('set-rounding').value);
+  st.standardMinutesPerDay = Math.round(Number(document.getElementById('set-std').value) * 60);
+  st.nightStart = document.getElementById('set-night-start').value || '22:00';
+  st.nightEnd = document.getElementById('set-night-end').value || '05:00';
+  st.csvVersion = document.getElementById('set-csv-version').value.trim();
+  st.timeFormat = document.getElementById('set-time-format').value;
+  st.csvColWorkDays = document.getElementById('set-col-days').value.trim() || '出勤日数';
+  st.csvColWorkTime = document.getElementById('set-col-work').value.trim() || '労働時間';
+  st.csvColOvertime = document.getElementById('set-col-ot').value.trim() || '残業時間';
+  st.csvColNight = document.getElementById('set-col-night').value.trim() || '深夜労働時間';
+  st.csvColPaidLeave = document.getElementById('set-col-paid').value.trim() || '有給日数';
+  st.overtimeAlertHours = Number(document.getElementById('set-ot-alert').value) || 45;
+  const pin = document.getElementById('set-pin').value.trim();
+  if (pin) st.adminPin = pin;
+  saveData();
+  alert('設定を保存しました');
+}
+
+/* ---------- バックアップタブ ---------- */
+function renderBackupTab(panel) {
+  const last = DATA.settings.lastBackup
+    ? new Date(DATA.settings.lastBackup).toLocaleString('ja-JP')
+    : 'まだ取得していません';
+  panel.innerHTML = `
+    <div class="note warn" style="font-size:14px">⚠ データはこのタブレットのブラウザ内(localStorage)に保存されています。
+    ブラウザの履歴・サイトデータを削除すると勤怠データも消えます。<b>週1回以上のバックアップ</b>を強くおすすめします。</div>
+    <div class="form-row"><label>前回バックアップ:</label><span>${last}</span></div>
+    <div class="form-row">
+      <button class="primary-btn" onclick="exportBackup()">バックアップをダウンロード(JSON)</button>
+    </div>
+    <h3>復元</h3>
+    <div class="form-row">
+      <input type="file" id="restore-file" accept=".json">
+      <button class="danger-btn" onclick="restoreBackup()">このファイルで復元(上書き)</button>
+    </div>
+    <div class="note">復元すると現在のデータはすべて置き換えられます。</div>`;
+}
+function exportBackup() {
+  DATA.settings.lastBackup = Date.now();
+  saveData();
+  const blob = new Blob([JSON.stringify(DATA, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const d = new Date();
+  a.download = `勤怠バックアップ_${fmtDateKey(d)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  switchTab('backup');
+}
+function restoreBackup() {
+  const f = document.getElementById('restore-file').files[0];
+  if (!f) { alert('ファイルを選択してください'); return; }
+  if (!confirm('現在のデータをすべて置き換えます。よろしいですか?')) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const d = JSON.parse(reader.result);
+      if (!d.staff || !d.punches) throw new Error('形式が違います');
+      DATA = d;
+      DATA.settings = Object.assign(structuredClone(DEFAULT_DATA.settings), d.settings || {});
+      DATA.staff = DATA.staff.map(s => Object.assign({ kana: '', patternId: '' }, s));
+      DATA.dayMarks = DATA.dayMarks || [];
+      DATA.workPatterns = DATA.workPatterns || [];
+      saveData();
+      alert('復元しました');
+      switchTab('backup');
+    } catch (e) {
+      alert('復元に失敗しました: ' + e.message);
+    }
+  };
+  reader.readAsText(f);
+}
+
+/* ================= 共通 ================= */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+tickClock();
+setInterval(tickClock, 1000);
+renderPunchScreen();
+</script>
+</body>
+</html>
