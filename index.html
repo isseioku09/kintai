@@ -200,6 +200,25 @@
   td.mark-cell select { font-size: 13px; padding: 4px 6px; }
   tr.row-fix td { background: var(--red-soft) !important; }
   tr.totals td { background: #f1f5f9; font-weight: 700; }
+
+  /* ---------- 印刷(PDF出力) ---------- */
+  #print-area { display: none; }
+  .print-sheet { background: #fff; color: #000; padding: 8px 0; }
+  .print-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+  .print-title { font-size: 18px; font-weight: 700; }
+  .print-meta { font-size: 12px; margin-top: 2px; }
+  .print-approve { display: flex; }
+  .print-approve div { border: 1px solid #444; width: 68px; height: 58px; font-size: 10px; padding: 2px 4px; text-align: center; }
+  .print-note { font-size: 10px; color: #444; margin-top: 6px; }
+  @media print {
+    body > *:not(#print-area) { display: none !important; }
+    #print-area { display: block !important; }
+    .print-sheet { page-break-after: always; }
+    .print-sheet:last-child { page-break-after: auto; }
+    .print-sheet table { width: 100%; border-collapse: collapse; }
+    .print-sheet th, .print-sheet td { border: 1px solid #444; padding: 2px 6px; font-size: 10.5px; white-space: nowrap; background: none; }
+    .print-sheet th { background: #eee !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
 </style>
 </head>
 <body>
@@ -236,6 +255,9 @@
   </div>
   <div class="panel" id="admin-panel"></div>
 </div>
+
+<!-- ================= 印刷用(PDF出力) ================= -->
+<div id="print-area"></div>
 
 <!-- ================= 打刻完了 ================= -->
 <div id="done-overlay">
@@ -763,6 +785,8 @@ function renderSummaryTab(panel) {
       <label>対象月:</label>${monthSelectorHtml('summary')}
       <button class="primary-btn" onclick="exportCsv()">MF給与用CSVを出力</button>
       <button class="small-btn" onclick="exportDetailCsv()">出勤簿CSV(確認用)</button>
+      <button class="small-btn" onclick="printAllSheets()">出勤簿PDF(全員)</button>
+      <button class="small-btn" onclick="exportPunchLogCsv()">打刻ログCSV</button>
     </div>
     <div class="cards">
       <div class="card"><div class="card-label">総労働時間</div><div class="card-value">${formatDuration(totalWorked)}</div></div>
@@ -848,6 +872,100 @@ function exportDetailCsv() {
     }
   }
   downloadCsv(`出勤簿_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows);
+}
+
+function exportPunchLogCsv() {
+  const from = new Date(adminMonth.y, adminMonth.m - 1, 1).getTime();
+  const to = new Date(adminMonth.y, adminMonth.m, 1).getTime();
+  const byId = Object.fromEntries(DATA.staff.map(s => [s.id, s]));
+  const rows = [['従業員番号', '氏名', '日時', '種別']];
+  DATA.punches
+    .filter(p => p.ts >= from && p.ts < to)
+    .sort((a, b) => a.ts - b.ts)
+    .forEach(p => {
+      const s = byId[p.staffId];
+      rows.push([s?.code || '', s?.name || p.staffId, fmtDateTimeLocal(p.ts).replace('T', ' '), TYPE_LABEL[p.type]]);
+    });
+  downloadCsv(`打刻ログ_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows);
+}
+
+/* ---------- 出勤簿の印刷(PDF出力) ---------- */
+function buildPrintSheetHtml(staffId) {
+  const { y, m } = adminMonth;
+  const staff = DATA.staff.find(s => s.id === staffId);
+  const pattern = patternOf(staff);
+  const std = staffStdMinutes(staff);
+  const sum = monthlySummary(staffId, y, m);
+  const byDay = {};
+  for (const sh of sum.shifts) {
+    const key = fmtDateKey(new Date(sh.in ?? sh.out));
+    (byDay[key] = byDay[key] || []).push(sh);
+  }
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const youbiName = ['日', '月', '火', '水', '木', '金', '土'];
+  let rows = '';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateKey = y + '-' + pad2(m) + '-' + pad2(d);
+    const w = new Date(y, m - 1, d).getDay();
+    const shifts = byDay[dateKey] || [];
+    if (!shifts.length) {
+      const mark = markOf(staffId, dateKey);
+      rows += `<tr><td>${m}/${d}(${youbiName[w]})</td><td>${mark ? mark.kind : ''}</td><td colspan="7"></td></tr>`;
+      continue;
+    }
+    for (const sh of shifts) {
+      const c = calcShift(sh);
+      const breakMin = Math.round(sh.breaks.reduce((a, [x, yy]) => a + (yy - x) / 60000, 0));
+      const needFix = !sh.stillWorking && (sh.missingOut || sh.orphan || !c.valid);
+      const ot = c.valid ? Math.max(0, c.worked - std) : 0;
+      const flags = [];
+      if (needFix) flags.push('要修正');
+      if (pattern && c.valid && !sh.stillWorking) {
+        const expIn = new Date(y, m - 1, d).getTime() + parseHM(pattern.start) * 60000;
+        const expOut = expIn + patternSpanMinutes(pattern) * 60000;
+        if (sh.in > expIn) flags.push('遅刻');
+        if (sh.out < expOut) flags.push('早退');
+      }
+      rows += `<tr>
+        <td>${m}/${d}(${youbiName[w]})</td><td>出勤</td>
+        <td>${sh.in ? fmtTime(new Date(sh.in)) : ''}</td>
+        <td>${sh.out ? fmtTime(new Date(sh.out)) + (fmtDateKey(new Date(sh.out)) !== dateKey ? '翌' : '') : ''}</td>
+        <td>${breakMin ? minutesToHM(breakMin) : ''}</td>
+        <td>${c.valid ? formatDuration(c.worked) : ''}</td>
+        <td>${c.valid && ot ? formatDuration(ot) : ''}</td>
+        <td>${c.valid && c.night ? formatDuration(c.night) : ''}</td>
+        <td>${flags.join('・')}</td>
+      </tr>`;
+    }
+  }
+  return `<div class="print-sheet">
+    <div class="print-head">
+      <div>
+        <div class="print-title">出勤簿　${y}年${m}月</div>
+        <div class="print-meta">${escapeHtml(DATA.settings.officeName || '')}</div>
+        <div class="print-meta">氏名: ${escapeHtml(staff.name)}　従業員番号: ${escapeHtml(staff.code || '')}
+          勤務体系: ${pattern ? escapeHtml(pattern.name) + `(${pattern.start}〜${pattern.end})` : 'デフォルト'}　所定: ${minutesToHM(std)}/日</div>
+      </div>
+      <div class="print-approve"><div>施設長</div><div>管理者</div><div>本人</div></div>
+    </div>
+    <table>
+      <tr><th>日付</th><th>区分</th><th>出勤</th><th>退勤</th><th>休憩</th><th>実働</th><th>残業</th><th>深夜</th><th>備考</th></tr>
+      ${rows}
+      <tr><td colspan="3"><b>合計</b>　出勤${sum.workDays}日・有給${sum.paidLeave}日</td><td></td><td></td>
+        <td><b>${formatDuration(sum.worked)}</b></td><td><b>${formatDuration(sum.overtime)}</b></td><td><b>${formatDuration(sum.night)}</b></td><td></td></tr>
+    </table>
+    <div class="print-note">出力日時: ${new Date().toLocaleString('ja-JP')}　/　残業=所定労働時間(${minutesToHM(std)})超過分、深夜=${DATA.settings.nightStart}〜${DATA.settings.nightEnd}、丸め: ${DATA.settings.roundingMinutes <= 1 ? 'なし' : DATA.settings.roundingMinutes + '分単位'}</div>
+  </div>`;
+}
+function printSheet() {
+  document.getElementById('print-area').innerHTML = buildPrintSheetHtml(recordsStaffId);
+  window.print();
+}
+function printAllSheets() {
+  const active = DATA.staff.filter(s => s.active);
+  if (!active.length) { alert('職員が登録されていません'); return; }
+  document.getElementById('print-area').innerHTML = active.map(s => buildPrintSheetHtml(s.id)).join('');
+  window.print();
 }
 
 /* ---------- 出勤簿タブ(職員別・日別明細) ---------- */
@@ -938,6 +1056,7 @@ function renderSheetTab(panel) {
       <span class="muted" style="font-size:13px">${pattern
         ? `勤務体系: ${escapeHtml(pattern.name)}(${pattern.start}〜${pattern.end}・所定${minutesToHM(std)})`
         : `勤務体系: 未設定(デフォルト所定${minutesToHM(std)})`}</span>
+      <button class="small-btn" onclick="printSheet()">この出勤簿を印刷/PDF</button>
     </div>
     <div class="table-wrap"><table>
       <tr><th>日付</th><th>区分</th><th>出勤</th><th>退勤</th><th>休憩</th><th>実働</th><th>残業</th><th>深夜</th><th>状態</th><th>操作</th></tr>
