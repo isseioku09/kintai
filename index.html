@@ -294,6 +294,8 @@ const DEFAULT_DATA = {
     csvColOvertime: '残業時間',
     csvColNight: '深夜労働時間',
     csvColPaidLeave: '有給日数',
+    mfHeader: null,            // MF給与サンプルCSVのヘッダー行(読込済みなら完全一致レイアウトで出力)
+    mfMap: null,               // {code, days, paid, work, ot, night} 各項目の列番号(-1=出力しない)
     overtimeAlertHours: 45,    // 月の残業がこれを超えたら赤表示(36協定の原則上限)
     soundOn: true,
     lastBackup: null,
@@ -832,10 +834,16 @@ function downloadCsv(filename, rows) {
   URL.revokeObjectURL(a.href);
 }
 
+function checkPunchAlerts(active) {
+  return active.some(s => monthlySummary(s.id, adminMonth.y, adminMonth.m).alerts > 0);
+}
+
 function exportCsv() {
   const st = DATA.settings;
+  // サンプルCSV読込済みならMF給与の実レイアウトに完全一致させて出力
+  if (st.mfHeader && st.mfMap) { exportCsvMfLayout(); return; }
   if (!st.csvVersion) {
-    alert('設定タブで「CSVのVersion値」を入力してください。\n(マネーフォワード給与の「支給/控除/勤怠データインポート」画面でサンプルCSVをダウンロードし、A列Versionの値をコピーします)');
+    alert('設定タブでマネーフォワード給与の「サンプルCSV」を読み込むか、「CSVのVersion値」を入力してください。\n(MF給与の「支給/控除/勤怠データインポート」画面でサンプルCSVをダウンロードできます)');
     switchTab('settings');
     return;
   }
@@ -849,6 +857,116 @@ function exportCsv() {
   }
   if (hasAlert && !confirm('打刻もれがある職員がいます。そのままCSVを出力しますか?\n(打刻もれのシフトは集計から除外されています)')) return;
   downloadCsv(`MF給与勤怠_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows);
+}
+
+// MF給与のサンプルCSVと同一レイアウトで出力(空欄の列はMF側で上書きされない)
+function exportCsvMfLayout() {
+  const st = DATA.settings;
+  const map = st.mfMap;
+  if (map.code == null || map.code < 0) {
+    alert('従業員番号の列が設定されていません。設定タブで項目の対応を確認してください。');
+    switchTab('settings');
+    return;
+  }
+  const active = DATA.staff.filter(s => s.active);
+  let hasAlert = false;
+  const rows = [st.mfHeader];
+  for (const s of active) {
+    const sum = monthlySummary(s.id, adminMonth.y, adminMonth.m);
+    if (sum.alerts) hasAlert = true;
+    const row = new Array(st.mfHeader.length).fill('');
+    row[0] = st.csvVersion;
+    row[map.code] = s.code || '';
+    if (map.days >= 0) row[map.days] = sum.workDays;
+    if (map.paid >= 0) row[map.paid] = sum.paidLeave;
+    if (map.work >= 0) row[map.work] = formatDuration(sum.worked);
+    if (map.ot >= 0) row[map.ot] = formatDuration(sum.overtime);
+    if (map.night >= 0) row[map.night] = formatDuration(sum.night);
+    rows.push(row);
+  }
+  if (hasAlert && !confirm('打刻もれがある職員がいます。そのままCSVを出力しますか?\n(打刻もれのシフトは集計から除外されています)')) return;
+  downloadCsv(`MF給与勤怠_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows);
+}
+
+/* ---------- MF給与サンプルCSVの読込 ---------- */
+function parseCsvLine(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += ch;
+    }
+    else if (ch === '"') q = true;
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+function loadMfSample() {
+  const f = document.getElementById('mf-sample').files[0];
+  if (!f) { alert('サンプルCSVファイルを選択してください'); return; }
+  const tryRead = (enc, fallback) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const text = String(r.result);
+      if (enc === 'utf-8' && text.includes('�') && fallback) { fallback(); return; }
+      applyMfSample(text);
+    };
+    r.readAsText(f, enc);
+  };
+  // UTF-8で読み、文字化けがあればShift_JISで再読込
+  tryRead('utf-8', () => tryRead('shift-jis', null));
+}
+function applyMfSample(text) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) { alert('CSVが空です'); return; }
+  const header = parseCsvLine(lines[0]).map(h => h.trim());
+  if (!/version/i.test(header[0] || '')) {
+    alert('A列が「Version」ではありません。MF給与の「支給/控除/勤怠データインポート」画面のサンプルCSVか確認してください。');
+    return;
+  }
+  const st = DATA.settings;
+  st.mfHeader = header;
+  if (lines[1]) {
+    const v = parseCsvLine(lines[1])[0];
+    if (v && v.trim()) st.csvVersion = v.trim();
+  }
+  // 列名から自動マッピング(設定画面で修正可能)
+  const find = (...keys) => {
+    for (const k of keys) {
+      const i = header.findIndex(h => h.includes(k));
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  st.mfMap = {
+    code: find('従業員番号'),
+    days: header.findIndex(h => h.includes('出勤日数') && !h.includes('有')),
+    paid: find('有給休暇取得日数', '有給日数', '有休日数', '有給取得', '有給'),
+    work: header.findIndex(h => h.includes('労働時間') && !h.includes('深夜') && !h.includes('所定外') && !h.includes('法定')),
+    ot: find('普通残業時間', '残業時間', '時間外労働'),
+    night: find('深夜労働時間', '深夜時間', '深夜'),
+  };
+  saveData();
+  switchTab('settings');
+  alert('サンプルCSVを読み込みました。\nVersion値と項目の対応(→列)が自動設定されたので、内容を確認してください。');
+}
+function discardMfLayout() {
+  if (!confirm('読み込んだレイアウトを破棄して、手動設定に戻しますか?')) return;
+  DATA.settings.mfHeader = null;
+  DATA.settings.mfMap = null;
+  saveData();
+  switchTab('settings');
+}
+function mfMapSelectHtml(key) {
+  const st = DATA.settings;
+  const sel = st.mfMap?.[key] ?? -1;
+  const opts = ['<option value="-1"' + (sel < 0 ? ' selected' : '') + '>出力しない</option>',
+    ...st.mfHeader.map((h, i) =>
+      `<option value="${i}" ${sel === i ? 'selected' : ''}>${escapeHtml(h || ('列' + (i + 1)))}</option>`)];
+  return `<select id="set-map-${key}" style="max-width:260px">${opts.join('')}</select>`;
 }
 
 function exportDetailCsv() {
@@ -1269,18 +1387,34 @@ function renderSettingsTab(panel) {
 
     <h3>マネーフォワード給与 CSV設定</h3>
     <div class="note">MF給与の「給与計算」→「メニュー」→「支給/控除/勤怠CSVインポート」で<b>サンプルCSV</b>をダウンロードし、
-    A列「Version」の値と、勤怠項目の正確な名称をここに合わせて入力してください。列名が一致しないと取り込めません。</div>
-    <div class="form-row"><label>CSVのVersion値</label><input id="set-csv-version" value="${escapeHtml(st.csvVersion)}" placeholder="例: 1.0" style="width:120px"></div>
+    ここで読み込むと、Version値と列構成が自動設定され、<b>MF給与にそのまま取り込めるレイアウト</b>で出力されます。</div>
+    <div class="form-row"><label>サンプルCSVを読み込む</label>
+      <input type="file" id="mf-sample" accept=".csv,text/csv">
+      <button class="small-btn" onclick="loadMfSample()">読み込んで自動設定</button></div>
+    ${st.mfHeader ? `
+      <div class="note" style="color:var(--green);font-weight:600">✓ サンプル読込済み(${st.mfHeader.length}列・Version「${escapeHtml(st.csvVersion)}」)。出力はこのレイアウトに完全一致します。</div>
+      <div class="note">各項目をMF給与のどの列に出力するか確認してください(自動判定済み・変更したら「設定を保存」):</div>
+      <div class="form-row"><label>従業員番号 → 列</label>${mfMapSelectHtml('code')}</div>
+      <div class="form-row"><label>出勤日数 → 列</label>${mfMapSelectHtml('days')}</div>
+      <div class="form-row"><label>有給日数 → 列</label>${mfMapSelectHtml('paid')}</div>
+      <div class="form-row"><label>労働時間 → 列</label>${mfMapSelectHtml('work')}</div>
+      <div class="form-row"><label>残業時間 → 列</label>${mfMapSelectHtml('ot')}</div>
+      <div class="form-row"><label>深夜労働時間 → 列</label>${mfMapSelectHtml('night')}</div>
+      <div class="form-row"><button class="small-btn" onclick="discardMfLayout()">レイアウトを破棄して手動設定に戻す</button></div>
+    ` : `
+      <div class="form-row"><label>CSVのVersion値</label><input id="set-csv-version" value="${escapeHtml(st.csvVersion)}" placeholder="例: 1.0" style="width:120px"></div>
+      <div class="form-row"><label>列名: 出勤日数</label><input id="set-col-days" value="${escapeHtml(st.csvColWorkDays)}"></div>
+      <div class="form-row"><label>列名: 労働時間</label><input id="set-col-work" value="${escapeHtml(st.csvColWorkTime)}"></div>
+      <div class="form-row"><label>列名: 残業時間</label><input id="set-col-ot" value="${escapeHtml(st.csvColOvertime)}"></div>
+      <div class="form-row"><label>列名: 深夜労働時間</label><input id="set-col-night" value="${escapeHtml(st.csvColNight)}"></div>
+      <div class="form-row"><label>列名: 有給日数</label><input id="set-col-paid" value="${escapeHtml(st.csvColPaidLeave)}"></div>
+    `}
     <div class="form-row"><label>時間の形式</label>
       <select id="set-time-format">
         <option value="hm" ${st.timeFormat === 'hm' ? 'selected' : ''}>時間:分 (例 160:30)</option>
         <option value="decimal" ${st.timeFormat === 'decimal' ? 'selected' : ''}>小数 (例 160.50)</option>
-      </select></div>
-    <div class="form-row"><label>列名: 出勤日数</label><input id="set-col-days" value="${escapeHtml(st.csvColWorkDays)}"></div>
-    <div class="form-row"><label>列名: 労働時間</label><input id="set-col-work" value="${escapeHtml(st.csvColWorkTime)}"></div>
-    <div class="form-row"><label>列名: 残業時間</label><input id="set-col-ot" value="${escapeHtml(st.csvColOvertime)}"></div>
-    <div class="form-row"><label>列名: 深夜労働時間</label><input id="set-col-night" value="${escapeHtml(st.csvColNight)}"></div>
-    <div class="form-row"><label>列名: 有給日数</label><input id="set-col-paid" value="${escapeHtml(st.csvColPaidLeave)}"></div>
+      </select>
+      <span class="muted">(MF給与の勤怠項目の単位設定に合わせる: 「000時間00分」→時間:分 / 「0.0時間」→小数)</span></div>
 
     <h3>管理</h3>
     <div class="form-row"><label>管理用暗証番号</label><input id="set-pin" value="${escapeHtml(st.adminPin)}" style="width:100px"></div>
@@ -1294,13 +1428,25 @@ function saveSettings() {
   st.standardMinutesPerDay = Math.round(Number(document.getElementById('set-std').value) * 60);
   st.nightStart = document.getElementById('set-night-start').value || '22:00';
   st.nightEnd = document.getElementById('set-night-end').value || '05:00';
-  st.csvVersion = document.getElementById('set-csv-version').value.trim();
   st.timeFormat = document.getElementById('set-time-format').value;
-  st.csvColWorkDays = document.getElementById('set-col-days').value.trim() || '出勤日数';
-  st.csvColWorkTime = document.getElementById('set-col-work').value.trim() || '労働時間';
-  st.csvColOvertime = document.getElementById('set-col-ot').value.trim() || '残業時間';
-  st.csvColNight = document.getElementById('set-col-night').value.trim() || '深夜労働時間';
-  st.csvColPaidLeave = document.getElementById('set-col-paid').value.trim() || '有給日数';
+  if (st.mfHeader) {
+    // サンプル読込済み: 項目→列のマッピングを保存
+    st.mfMap = {
+      code: Number(document.getElementById('set-map-code').value),
+      days: Number(document.getElementById('set-map-days').value),
+      paid: Number(document.getElementById('set-map-paid').value),
+      work: Number(document.getElementById('set-map-work').value),
+      ot: Number(document.getElementById('set-map-ot').value),
+      night: Number(document.getElementById('set-map-night').value),
+    };
+  } else {
+    st.csvVersion = document.getElementById('set-csv-version').value.trim();
+    st.csvColWorkDays = document.getElementById('set-col-days').value.trim() || '出勤日数';
+    st.csvColWorkTime = document.getElementById('set-col-work').value.trim() || '労働時間';
+    st.csvColOvertime = document.getElementById('set-col-ot').value.trim() || '残業時間';
+    st.csvColNight = document.getElementById('set-col-night').value.trim() || '深夜労働時間';
+    st.csvColPaidLeave = document.getElementById('set-col-paid').value.trim() || '有給日数';
+  }
   st.overtimeAlertHours = Number(document.getElementById('set-ot-alert').value) || 45;
   const pin = document.getElementById('set-pin').value.trim();
   if (pin) st.adminPin = pin;
