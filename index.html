@@ -283,7 +283,8 @@ const DEFAULT_DATA = {
   settings: {
     adminPin: '0000',
     officeName: '',
-    roundingMinutes: 1,        // 1=丸めなし, 5,10,15,30 (出勤切り上げ/退勤切り捨て)
+    closingDay: 20,            // 締め日。20=前月21日〜当月20日を「当月度」として集計。31=月末締め
+    roundingMinutes: 30,       // 1=丸めなし, 5,10,15,30 (出勤切り上げ/退勤切り捨て)
     standardMinutesPerDay: 480, // 所定労働時間(分)。超過分を残業として集計
     nightStart: '22:00',
     nightEnd: '05:00',
@@ -310,7 +311,7 @@ function loadData() {
     if (!raw) return structuredClone(DEFAULT_DATA);
     const d = JSON.parse(raw);
     d.settings = Object.assign(structuredClone(DEFAULT_DATA.settings), d.settings || {});
-    d.staff = (d.staff || []).map(s => Object.assign({ kana: '', patternId: '' }, s));
+    d.staff = (d.staff || []).map(s => Object.assign({ kana: '', patternId: '', office: '' }, s));
     d.punches = d.punches || [];
     d.dayMarks = d.dayMarks || [];
     d.workPatterns = d.workPatterns || [];
@@ -346,6 +347,28 @@ function formatDuration(min) {
 function parseHM(str) { // "22:00" -> minutes from 0:00
   const [h, m] = str.split(':').map(Number);
   return h * 60 + (m || 0);
+}
+function fmtMD(d) { return (d.getMonth() + 1) + '/' + d.getDate(); }
+
+/* ================= 給与月度(締め期間) ================= */
+// 「y年m月度」の期間。締め日20なら 前月21日〜当月20日。締め日28以上は月末締め(1日〜末日)。
+function periodRange(y, m) {
+  const cd = DATA.settings.closingDay || 31;
+  if (cd >= 28) {
+    const fromDate = new Date(y, m - 1, 1), toDate = new Date(y, m, 0);
+    return { from: fromDate.getTime(), to: new Date(y, m, 1).getTime(), fromDate, toDate, label: `${y}年${m}月` };
+  }
+  const fromDate = new Date(y, m - 2, cd + 1);
+  const toDate = new Date(y, m - 1, cd);
+  return { from: fromDate.getTime(), to: toDate.getTime() + 86400000, fromDate, toDate, label: `${y}年${m}月度` };
+}
+// 今日が属する月度
+function currentPeriodYM() {
+  const t = new Date();
+  const cd = DATA.settings.closingDay || 31;
+  let y = t.getFullYear(), m = t.getMonth() + 1;
+  if (cd < 28 && t.getDate() > cd) { m++; if (m > 12) { m = 1; y++; } }
+  return { y, m };
 }
 
 /* ================= シフト構築(打刻ペアリング) ================= */
@@ -439,9 +462,9 @@ function nightOverlapMinutes(a, b) {
 }
 
 // 月次集計
-function monthlySummary(staffId, year, month) { // month: 1-12
-  const from = new Date(year, month - 1, 1).getTime();
-  const to = new Date(year, month, 1).getTime();
+function monthlySummary(staffId, year, month) { // month: 1-12(給与月度。締め期間で集計)
+  const pr = periodRange(year, month);
+  const from = pr.from, to = pr.to;
   const shifts = buildShifts(staffId, from, to);
   const std = staffStdMinutes(DATA.staff.find(s => s.id === staffId));
   const days = new Set();
@@ -462,9 +485,9 @@ function monthlySummary(staffId, year, month) { // month: 1-12
     night += c.night;
   }
   for (const key of Object.keys(perDay)) overtime += Math.max(0, perDay[key] - std);
-  const monthPrefix = year + '-' + pad2(month);
+  const fromKey = fmtDateKey(pr.fromDate), toKey = fmtDateKey(pr.toDate);
   const paidLeave = DATA.dayMarks.filter(m =>
-    m.staffId === staffId && m.date.startsWith(monthPrefix) && m.kind === '有給').length;
+    m.staffId === staffId && m.date >= fromKey && m.date <= toKey && m.kind === '有給').length;
   return { workDays: days.size, worked, overtime, night, alerts, alertDates, paidLeave, perDay, shifts };
 }
 
@@ -538,7 +561,10 @@ function renderPunchScreen() {
   const st = DATA.settings;
   document.getElementById('office-name').textContent = st.officeName || '勤怠打刻';
 
-  const active = DATA.staff.filter(s => s.active);
+  // この端末の事業所名と一致する職員だけ表示(職員側の事業所が未設定なら常に表示)
+  const myOffice = (st.officeName || '').trim();
+  const active = DATA.staff.filter(s => s.active &&
+    (!myOffice || !(s.office || '').trim() || (s.office || '').trim() === myOffice));
 
   // 勤務中バッジ
   const workingCount = active.filter(s => staffStatus(s.id).state !== 'off' ||
@@ -717,11 +743,13 @@ function tickClock() {
 let currentTab = 'summary';
 let adminMonth = (() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() + 1 }; })();
 let recordsStaffId = null;
+let adminOfficeFilter = 'all';
 
 function openAdmin() {
   const pin = prompt('管理用暗証番号を入力してください');
   if (pin === null) return;
   if (pin !== DATA.settings.adminPin) { alert('暗証番号が違います'); return; }
+  adminMonth = currentPeriodYM();
   document.getElementById('view-punch').style.display = 'none';
   document.getElementById('view-admin').style.display = 'block';
   switchTab('summary');
@@ -745,12 +773,13 @@ function switchTab(tab) {
 
 function monthSelectorHtml(idPrefix) {
   const opts = [];
-  const now = new Date();
+  const cur = currentPeriodYM();
   for (let i = 0; i < 14; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const d = new Date(cur.y, cur.m - 1 - i, 1);
     const y = d.getFullYear(), m = d.getMonth() + 1;
+    const pr = periodRange(y, m);
     const sel = (y === adminMonth.y && m === adminMonth.m) ? 'selected' : '';
-    opts.push(`<option value="${y}-${m}" ${sel}>${y}年${m}月</option>`);
+    opts.push(`<option value="${y}-${m}" ${sel}>${pr.label}(${fmtMD(pr.fromDate)}〜${fmtMD(pr.toDate)})</option>`);
   }
   return `<select id="${idPrefix}-month" onchange="onMonthChange(this.value)">${opts.join('')}</select>`;
 }
@@ -766,7 +795,16 @@ function gotoSheet(staffId) {
   switchTab('sheet');
 }
 function renderSummaryTab(panel) {
-  const active = DATA.staff.filter(s => s.active);
+  const offices = [...new Set(DATA.staff.filter(s => s.active).map(s => (s.office || '').trim()).filter(Boolean))];
+  if (adminOfficeFilter !== 'all' && !offices.includes(adminOfficeFilter)) adminOfficeFilter = 'all';
+  const officeSelector = offices.length ? `
+      <label style="min-width:auto">事業所:</label>
+      <select onchange="adminOfficeFilter=this.value;switchTab('summary')">
+        <option value="all">全事業所</option>
+        ${offices.map(o => `<option value="${escapeHtml(o)}" ${adminOfficeFilter === o ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
+      </select>` : '';
+  const active = DATA.staff.filter(s => s.active &&
+    (adminOfficeFilter === 'all' || (s.office || '').trim() === adminOfficeFilter));
   const rows = active.map(s => {
     const sum = monthlySummary(s.id, adminMonth.y, adminMonth.m);
     return { staff: s, sum };
@@ -784,7 +822,7 @@ function renderSummaryTab(panel) {
 
   panel.innerHTML = `
     <div class="form-row">
-      <label>対象月:</label>${monthSelectorHtml('summary')}
+      <label>対象月:</label>${monthSelectorHtml('summary')}${officeSelector}
       <button class="primary-btn" onclick="exportCsv()">MF給与用CSVを出力</button>
       <button class="small-btn" onclick="exportDetailCsv()">出勤簿CSV(確認用)</button>
       <button class="small-btn" onclick="printAllSheets()">出勤簿PDF(全員)</button>
@@ -993,8 +1031,7 @@ function exportDetailCsv() {
 }
 
 function exportPunchLogCsv() {
-  const from = new Date(adminMonth.y, adminMonth.m - 1, 1).getTime();
-  const to = new Date(adminMonth.y, adminMonth.m, 1).getTime();
+  const { from, to } = periodRange(adminMonth.y, adminMonth.m);
   const byId = Object.fromEntries(DATA.staff.map(s => [s.id, s]));
   const rows = [['従業員番号', '氏名', '日時', '種別']];
   DATA.punches
@@ -1019,16 +1056,17 @@ function buildPrintSheetHtml(staffId) {
     const key = fmtDateKey(new Date(sh.in ?? sh.out));
     (byDay[key] = byDay[key] || []).push(sh);
   }
-  const daysInMonth = new Date(y, m, 0).getDate();
+  const pr = periodRange(y, m);
   const youbiName = ['日', '月', '火', '水', '木', '金', '土'];
   let rows = '';
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateKey = y + '-' + pad2(m) + '-' + pad2(d);
-    const w = new Date(y, m - 1, d).getDay();
+  for (let ts0 = pr.from; ts0 < pr.to; ts0 += 86400000) {
+    const dt = new Date(ts0);
+    const dateKey = fmtDateKey(dt);
+    const w = dt.getDay();
     const shifts = byDay[dateKey] || [];
     if (!shifts.length) {
       const mark = markOf(staffId, dateKey);
-      rows += `<tr><td>${m}/${d}(${youbiName[w]})</td><td>${mark ? mark.kind : ''}</td><td colspan="7"></td></tr>`;
+      rows += `<tr><td>${fmtMD(dt)}(${youbiName[w]})</td><td>${mark ? mark.kind : ''}</td><td colspan="7"></td></tr>`;
       continue;
     }
     for (const sh of shifts) {
@@ -1039,13 +1077,13 @@ function buildPrintSheetHtml(staffId) {
       const flags = [];
       if (needFix) flags.push('要修正');
       if (pattern && c.valid && !sh.stillWorking) {
-        const expIn = new Date(y, m - 1, d).getTime() + parseHM(pattern.start) * 60000;
+        const expIn = ts0 + parseHM(pattern.start) * 60000;
         const expOut = expIn + patternSpanMinutes(pattern) * 60000;
         if (sh.in > expIn) flags.push('遅刻');
         if (sh.out < expOut) flags.push('早退');
       }
       rows += `<tr>
-        <td>${m}/${d}(${youbiName[w]})</td><td>出勤</td>
+        <td>${fmtMD(dt)}(${youbiName[w]})</td><td>出勤</td>
         <td>${sh.in ? fmtTime(new Date(sh.in)) : ''}</td>
         <td>${sh.out ? fmtTime(new Date(sh.out)) + (fmtDateKey(new Date(sh.out)) !== dateKey ? '翌' : '') : ''}</td>
         <td>${breakMin ? minutesToHM(breakMin) : ''}</td>
@@ -1059,7 +1097,7 @@ function buildPrintSheetHtml(staffId) {
   return `<div class="print-sheet">
     <div class="print-head">
       <div>
-        <div class="print-title">出勤簿　${y}年${m}月</div>
+        <div class="print-title">出勤簿　${pr.label}(${fmtMD(pr.fromDate)}〜${fmtMD(pr.toDate)})</div>
         <div class="print-meta">${escapeHtml(DATA.settings.officeName || '')}</div>
         <div class="print-meta">氏名: ${escapeHtml(staff.name)}　従業員番号: ${escapeHtml(staff.code || '')}
           勤務体系: ${pattern ? escapeHtml(pattern.name) + `(${pattern.start}〜${pattern.end})` : 'デフォルト'}　所定: ${minutesToHM(std)}/日</div>
@@ -1110,14 +1148,15 @@ function renderSheetTab(panel) {
     (byDay[key] = byDay[key] || []).push(sh);
   }
 
-  const daysInMonth = new Date(y, m, 0).getDate();
+  const pr = periodRange(y, m);
   const youbiName = ['日', '月', '火', '水', '木', '金', '土'];
   let bodyRows = '';
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateKey = y + '-' + pad2(m) + '-' + pad2(d);
-    const w = new Date(y, m - 1, d).getDay();
+  for (let ts0 = pr.from; ts0 < pr.to; ts0 += 86400000) {
+    const dt = new Date(ts0);
+    const dateKey = fmtDateKey(dt);
+    const w = dt.getDay();
     const dayCls = w === 0 ? 'day-sun' : (w === 6 ? 'day-sat' : '');
-    const dateLabel = `<span class="${dayCls}">${m}/${d}(${youbiName[w]})</span>`;
+    const dateLabel = `<span class="${dayCls}">${fmtMD(dt)}(${youbiName[w]})</span>`;
     const shifts = byDay[dateKey] || [];
 
     if (shifts.length === 0) {
@@ -1141,7 +1180,7 @@ function renderSheetTab(panel) {
       // 遅刻・早退(勤務体系が割り当てられている場合のみ)
       let flags = '';
       if (pattern && c.valid && !sh.stillWorking) {
-        const expIn = new Date(y, m - 1, d).getTime() + parseHM(pattern.start) * 60000;
+        const expIn = ts0 + parseHM(pattern.start) * 60000;
         const expOut = expIn + patternSpanMinutes(pattern) * 60000;
         const f = [];
         if (sh.in > expIn) f.push('遅刻');
@@ -1270,12 +1309,13 @@ function patternSelectHtml(staff) {
 function renderStaffTab(panel) {
   panel.innerHTML = `
     <div class="table-wrap"><table>
-      <tr><th>従業員番号(MF給与)</th><th>氏名</th><th>ふりがな</th><th>勤務体系</th><th>状態</th><th></th></tr>
+      <tr><th>従業員番号(MF給与)</th><th>氏名</th><th>ふりがな</th><th>勤務体系</th><th>事業所</th><th>状態</th><th></th></tr>
       ${DATA.staff.map(s => `<tr>
         <td><input value="${escapeHtml(s.code || '')}" style="width:110px" onchange="editStaff('${s.id}','code',this.value)"></td>
         <td><input value="${escapeHtml(s.name)}" style="width:150px" onchange="editStaff('${s.id}','name',this.value)"></td>
         <td><input value="${escapeHtml(s.kana || '')}" style="width:150px" placeholder="やまだ はなこ" onchange="editStaff('${s.id}','kana',this.value)"></td>
         <td>${patternSelectHtml(s)}</td>
+        <td><input value="${escapeHtml(s.office || '')}" style="width:110px" onchange="editStaff('${s.id}','office',this.value)"></td>
         <td>${s.active ? '在籍' : '<span class="muted">非表示</span>'}</td>
         <td><button class="small-btn" onclick="toggleStaff('${s.id}')">${s.active ? '非表示にする' : '在籍に戻す'}</button></td>
       </tr>`).join('')}
@@ -1285,10 +1325,18 @@ function renderStaffTab(panel) {
       <input id="new-staff-code" placeholder="従業員番号" style="width:110px">
       <input id="new-staff-name" placeholder="氏名" style="width:150px">
       <input id="new-staff-kana" placeholder="ふりがな" style="width:150px">
+      <input id="new-staff-office" placeholder="事業所" style="width:110px">
       <button class="primary-btn" onclick="addStaff()">追加</button>
     </div>
+    <h3>一括登録(Excelから貼り付け)</h3>
+    <div class="note">Excelの名簿から「<b>従業員番号・氏名・ふりがな・勤務体系・事業所</b>」の順に列をコピーして、下に貼り付けてください(1行1人。見出し行は自動でスキップ)。
+    勤務体系は下の一覧の名称と一致すれば自動で割り当てられます。既存の従業員番号は上書き更新されます。</div>
+    <textarea id="bulk-staff" rows="6" style="width:100%;font-size:14px;font-family:inherit;border:1px solid var(--border);border-radius:8px;padding:8px"
+      placeholder="001	山田花子	やまだ はなこ	日勤A	○○デイサービス"></textarea>
+    <div class="form-row"><button class="primary-btn" onclick="bulkImportStaff()">一括登録する</button></div>
     <div class="note">従業員番号はマネーフォワード給与に登録されている従業員番号と一致させてください(CSV取込時の照合キーになります)。<br>
     ふりがなを入れると打刻画面が五十音順に並び、職員が多い場合は「あかさたな」の絞り込みタブが表示されます。<br>
+    事業所を入れると、その事業所名を設定したタブレットにだけ表示されます(空欄なら全タブレットに表示)。<br>
     退職した職員は「非表示」にすると打刻画面から消えます(過去の勤怠データは残ります)。</div>
 
     <h3>勤務体系</h3>
@@ -1345,9 +1393,42 @@ function addStaff() {
   const code = document.getElementById('new-staff-code').value.trim();
   const name = document.getElementById('new-staff-name').value.trim();
   const kana = document.getElementById('new-staff-kana').value.trim();
+  const office = document.getElementById('new-staff-office').value.trim();
   if (!name) { alert('氏名を入力してください'); return; }
-  DATA.staff.push({ id: uid(), code, name, kana, active: true });
+  DATA.staff.push({ id: uid(), code, name, kana, office, patternId: '', active: true });
   saveData(); switchTab('staff');
+}
+function bulkImportStaff() {
+  const text = document.getElementById('bulk-staff').value;
+  if (!text.trim()) { alert('名簿を貼り付けてください'); return; }
+  let added = 0, updated = 0;
+  const unknownPatterns = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const cells = (line.includes('\t') ? line.split('\t') : parseCsvLine(line)).map(c => c.trim());
+    if (cells.some(c => c === '氏名' || c === '従業員番号')) continue; // 見出し行
+    const [code, name, kana = '', patName = '', office = ''] = cells;
+    if (!name) continue;
+    const pattern = patName ? DATA.workPatterns.find(p => p.name === patName) : null;
+    if (patName && !pattern) unknownPatterns.add(patName);
+    const existing = code && DATA.staff.find(s => s.code === code);
+    if (existing) {
+      existing.name = name;
+      if (kana) existing.kana = kana;
+      if (pattern) existing.patternId = pattern.id;
+      if (office) existing.office = office;
+      existing.active = true;
+      updated++;
+    } else {
+      DATA.staff.push({ id: uid(), code: code || '', name, kana, office, patternId: pattern ? pattern.id : '', active: true });
+      added++;
+    }
+  }
+  saveData();
+  switchTab('staff');
+  let msg = `一括登録が完了しました。\n追加 ${added}名 / 更新 ${updated}名`;
+  if (unknownPatterns.size) msg += `\n\n⚠ 次の勤務体系が未登録のためデフォルト扱いになりました:\n${[...unknownPatterns].join('、')}\n(勤務体系を作成してから再度貼り付けると割り当てられます)`;
+  alert(msg);
 }
 function editStaff(id, field, val) {
   const s = DATA.staff.find(s => s.id === id);
@@ -1363,8 +1444,9 @@ function renderSettingsTab(panel) {
   const st = DATA.settings;
   panel.innerHTML = `
     <h3 style="margin-top:0">表示</h3>
-    <div class="form-row"><label>事業所名(打刻画面に表示)</label>
-      <input id="set-office" value="${escapeHtml(st.officeName)}" placeholder="例: ○○デイサービス" style="width:240px"></div>
+    <div class="form-row"><label>事業所名(この端末)</label>
+      <input id="set-office" value="${escapeHtml(st.officeName)}" placeholder="例: ○○デイサービス" style="width:240px">
+      <span class="muted">(打刻画面に表示。職員管理の「事業所」と一致する職員だけがこの端末に表示されます)</span></div>
     <div class="form-row"><label>打刻音</label>
       <select id="set-sound">
         <option value="1" ${st.soundOn ? 'selected' : ''}>鳴らす</option>
@@ -1372,6 +1454,12 @@ function renderSettingsTab(panel) {
       </select></div>
 
     <h3>集計ルール</h3>
+    <div class="form-row"><label>締め日</label>
+      <select id="set-closing">
+        <option value="31" ${st.closingDay >= 28 ? 'selected' : ''}>月末締め</option>
+        ${[5, 10, 15, 20, 25].map(v => `<option value="${v}" ${st.closingDay === v ? 'selected' : ''}>${v}日締め</option>`).join('')}
+      </select>
+      <span class="muted">(例: 20日締め=前月21日〜当月20日を「当月度」として集計)</span></div>
     <div class="form-row"><label>丸め単位</label>
       <select id="set-rounding">
         ${[1, 5, 10, 15, 30].map(v => `<option value="${v}" ${st.roundingMinutes === v ? 'selected' : ''}>${v === 1 ? '丸めなし(1分)' : v + '分(出勤切上げ/退勤切捨て)'}</option>`).join('')}
@@ -1424,6 +1512,7 @@ function saveSettings() {
   const st = DATA.settings;
   st.officeName = document.getElementById('set-office').value.trim();
   st.soundOn = document.getElementById('set-sound').value === '1';
+  st.closingDay = Number(document.getElementById('set-closing').value) || 31;
   st.roundingMinutes = Number(document.getElementById('set-rounding').value);
   st.standardMinutesPerDay = Math.round(Number(document.getElementById('set-std').value) * 60);
   st.nightStart = document.getElementById('set-night-start').value || '22:00';
