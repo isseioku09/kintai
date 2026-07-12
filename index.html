@@ -284,7 +284,7 @@ const DEFAULT_DATA = {
     adminPin: '0000',
     officeName: '',
     closingDay: 20,            // 締め日。20=前月21日〜当月20日を「当月度」として集計。31=月末締め
-    roundingMinutes: 30,       // 1=丸めなし, 5,10,15,30 (出勤切り上げ/退勤切り捨て)
+    roundingMinutes: 1,        // 1=丸めなし(労基法の原則), 5,10,15,30 (出勤切り上げ/退勤切り捨て)
     autoBreak: true,           // 休憩打刻がない場合、勤務体系の休憩分(未設定は法定基準)を自動控除
     standardMinutesPerDay: 480, // 所定労働時間(分)。超過分を残業として集計
     nightStart: '22:00',
