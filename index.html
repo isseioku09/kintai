@@ -797,6 +797,7 @@ let currentTab = 'summary';
 let adminMonth = (() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() + 1 }; })();
 let recordsStaffId = null;
 let adminOfficeFilter = 'all';
+let sheetBulkMode = false;
 
 function openAdmin() {
   const pin = prompt('管理用暗証番号を入力してください');
@@ -1197,6 +1198,11 @@ function renderSheetTab(panel) {
   const pattern = patternOf(staffObj);
   const std = staffStdMinutes(staffObj);
 
+  if (sheetBulkMode) {
+    renderSheetBulk(panel, staffOpts, staffObj, pattern, sum);
+    return;
+  }
+
   // 日付ごとのシフト(出勤日基準)
   const byDay = {};
   for (const sh of sum.shifts) {
@@ -1276,6 +1282,7 @@ function renderSheetTab(panel) {
       <span class="muted" style="font-size:13px">${pattern
         ? `勤務体系: ${escapeHtml(pattern.name)}(${pattern.start}〜${pattern.end}・所定${minutesToHM(std)})`
         : `勤務体系: 未設定(デフォルト所定${minutesToHM(std)})`}</span>
+      <button class="small-btn" onclick="sheetBulkMode=true;switchTab('sheet')">一括編集</button>
       <button class="small-btn" onclick="printSheet()">この出勤簿を印刷/PDF</button>
     </div>
     <div class="table-wrap"><table>
@@ -1292,6 +1299,152 @@ function renderSheetTab(panel) {
     <div class="note">打刻がない日は「区分」で有給・公休・欠勤を記録できます。出勤日の「区分」で体系を選ぶと、<b>その日だけ別の勤務体系</b>(残業基準・自動休憩・遅刻早退の判定)で計算されます。<br>
     「修正/打刻追加」で出勤・退勤・休憩をかんたんに直せます(夜勤の退勤は出勤日の行に表示)。
     休憩の「(自動)」は、休憩打刻がなかったため自動控除された分です(その日の勤務体系の休憩分、未設定は法定基準)。</div>`;
+}
+
+/* ---------- 出勤簿の一括編集モード ---------- */
+function renderSheetBulk(panel, staffOpts, staffObj, pattern, sum) {
+  const { y, m } = adminMonth;
+  const pr = periodRange(y, m);
+  const youbiName = ['日', '月', '火', '水', '木', '金', '土'];
+
+  const byDay = {};
+  for (const sh of sum.shifts) {
+    const key = fmtDateKey(new Date(sh.in ?? sh.out));
+    (byDay[key] = byDay[key] || []).push(sh);
+  }
+
+  const kindOptions = sel => [
+    `<option value="" ${sel === '' ? 'selected' : ''}>ー</option>`,
+    `<option value="work" ${sel === 'work' ? 'selected' : ''}>出勤${pattern ? '(' + escapeHtml(pattern.name) + ')' : ''}</option>`,
+    ...DATA.workPatterns.filter(p => !pattern || p.id !== pattern.id).map(p =>
+      `<option value="work:${p.id}" ${sel === 'work:' + p.id ? 'selected' : ''}>出勤(${escapeHtml(p.name)})</option>`),
+    ...['有給', '公休', '欠勤'].map(k => `<option value="${k}" ${sel === k ? 'selected' : ''}>${k}</option>`),
+  ].join('');
+
+  let bodyRows = '';
+  for (let ts0 = pr.from; ts0 < pr.to; ts0 += 86400000) {
+    const dt = new Date(ts0);
+    const dateKey = fmtDateKey(dt);
+    const w = dt.getDay();
+    const dayCls = w === 0 ? 'day-sun' : (w === 6 ? 'day-sat' : '');
+    const dateLabel = `<span class="${dayCls}">${fmtMD(dt)}(${youbiName[w]})</span>`;
+    const shifts = byDay[dateKey] || [];
+    const sh = shifts[0] || null;
+    const complex = shifts.length > 1 ||
+      (sh && (sh.breaks.length || sh.openBreak || sh.orphan || sh.stillWorking));
+
+    if (complex) {
+      bodyRows += `<tr>
+        <td>${dateLabel}</td>
+        <td colspan="3" class="muted">${sh?.stillWorking ? '勤務中のため編集できません' : '休憩打刻・複数勤務があるため個別修正してください'}</td>
+        <td><button class="small-btn" onclick="openDayEditor('${recordsStaffId}','${dateKey}')">個別修正</button></td>
+      </tr>`;
+      continue;
+    }
+
+    const mark = markOf(recordsStaffId, dateKey);
+    const ov = dayPatternOverride(recordsStaffId, dateKey);
+    const orig = {
+      kind: sh ? (ov ? 'work:' + ov.patternId : 'work') : (mark ? mark.kind : ''),
+      in: sh && sh.in ? fmtTime(new Date(sh.in)) : '',
+      out: sh && sh.out ? fmtTime(new Date(sh.out)) : '',
+      next: !!(sh && sh.out && fmtDateKey(new Date(sh.out)) !== dateKey),
+    };
+    bodyRows += `<tr data-date="${dateKey}" data-orig="${escapeHtml(JSON.stringify(orig))}">
+      <td>${dateLabel}</td>
+      <td class="mark-cell"><select class="bk-kind" onchange="bulkKindChanged(this)">${kindOptions(orig.kind)}</select></td>
+      <td><input type="time" class="bk-in" value="${orig.in}"></td>
+      <td><input type="time" class="bk-out" value="${orig.out}">
+        <label style="font-size:13px"><input type="checkbox" class="bk-next" ${orig.next ? 'checked' : ''}> 翌</label></td>
+      <td></td>
+    </tr>`;
+  }
+
+  panel.innerHTML = `
+    <div class="form-row">
+      <label>対象月:</label>${monthSelectorHtml('sheet')}
+      <label style="min-width:auto">職員:</label>
+      <select onchange="recordsStaffId=this.value;switchTab('sheet')">${staffOpts}</select>
+      <button class="primary-btn" onclick="bulkSaveSheet()">まとめて保存</button>
+      <button class="small-btn" onclick="sheetBulkMode=false;switchTab('sheet')">キャンセル</button>
+    </div>
+    <div class="note">区分と出退勤時刻を直接入力できます。区分で体系を選ぶと時刻が自動で入ります(手で直してOK)。
+    休憩はその日の体系に応じて自動控除されます。<b>変更した行だけ</b>が保存対象になります。</div>
+    <div class="table-wrap"><table>
+      <tr><th>日付</th><th>区分</th><th>出勤</th><th>退勤</th><th></th></tr>
+      ${bodyRows}
+    </table></div>
+    <div class="form-row">
+      <button class="primary-btn" onclick="bulkSaveSheet()">まとめて保存</button>
+      <button class="small-btn" onclick="sheetBulkMode=false;switchTab('sheet')">キャンセル</button>
+    </div>`;
+}
+function bulkKindChanged(sel) {
+  const tr = sel.closest('tr');
+  const isWork = sel.value === 'work' || sel.value.startsWith('work:');
+  const inEl = tr.querySelector('.bk-in'), outEl = tr.querySelector('.bk-out'), nextEl = tr.querySelector('.bk-next');
+  if (!isWork) {
+    inEl.value = ''; outEl.value = ''; nextEl.checked = false;
+    return;
+  }
+  const staff = DATA.staff.find(s => s.id === recordsStaffId);
+  const pat = sel.value.startsWith('work:')
+    ? DATA.workPatterns.find(p => p.id === sel.value.slice(5))
+    : patternOf(staff);
+  if (pat) {
+    inEl.value = pat.start;
+    outEl.value = pat.end;
+    nextEl.checked = parseHM(pat.end) <= parseHM(pat.start);
+  }
+}
+function bulkSaveSheet() {
+  const rows = document.querySelectorAll('#admin-panel tr[data-date]');
+  const ops = [], errors = [];
+  for (const tr of rows) {
+    const orig = JSON.parse(tr.dataset.orig);
+    const cur = {
+      kind: tr.querySelector('.bk-kind').value,
+      in: tr.querySelector('.bk-in').value,
+      out: tr.querySelector('.bk-out').value,
+      next: tr.querySelector('.bk-next').checked,
+    };
+    if (JSON.stringify(cur) === JSON.stringify(orig)) continue;
+    const isWork = cur.kind === 'work' || cur.kind.startsWith('work:');
+    if (isWork && !cur.in) { errors.push(tr.dataset.date.slice(5).replace('-', '/') + ': 出勤時刻が未入力です'); continue; }
+    if (!isWork && (cur.in || cur.out)) { errors.push(tr.dataset.date.slice(5).replace('-', '/') + ': 時刻を入れる場合は区分を「出勤」にしてください'); continue; }
+    ops.push({ dateKey: tr.dataset.date, cur });
+  }
+  if (errors.length) { alert('保存できない行があります:\n' + errors.join('\n')); return; }
+  if (!ops.length) { alert('変更はありません'); return; }
+  if (!confirm(`${ops.length}日分の変更を保存しますか?`)) return;
+  for (const { dateKey, cur } of ops) applyBulkDay(recordsStaffId, dateKey, cur);
+  saveData();
+  sheetBulkMode = false;
+  switchTab('sheet');
+}
+function applyBulkDay(staffId, dateKey, cur) {
+  // 休暇マークと日別体系をいったんリセット
+  DATA.dayMarks = DATA.dayMarks.filter(x => !(x.staffId === staffId && x.date === dateKey));
+  DATA.dayPatterns = DATA.dayPatterns.filter(x => !(x.staffId === staffId && x.date === dateKey));
+  const isWork = cur.kind === 'work' || cur.kind.startsWith('work:');
+  if (!isWork) {
+    replaceDayPunches(staffId, dateKey, []);
+    if (cur.kind) DATA.dayMarks.push({ id: uid(), staffId, date: dateKey, kind: cur.kind });
+    return;
+  }
+  if (cur.kind.startsWith('work:')) {
+    DATA.dayPatterns.push({ id: uid(), staffId, date: dateKey, patternId: cur.kind.slice(5) });
+  }
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const base = new Date(y, m - 1, d).getTime();
+  const inTs = base + parseHM(cur.in) * 60000;
+  const news = [{ id: uid(), staffId, type: 'in', ts: inTs }];
+  if (cur.out) {
+    let outTs = base + (cur.next ? 86400000 : 0) + parseHM(cur.out) * 60000;
+    if (outTs <= inTs) outTs += 86400000; // 「翌」の付け忘れの保険
+    news.push({ id: uid(), staffId, type: 'out', ts: outTs });
+  }
+  replaceDayPunches(staffId, dateKey, news);
 }
 
 /* ---------- 打刻の日別編集モーダル ---------- */
@@ -1313,19 +1466,47 @@ function closeDayEditor() {
   dayEditorCtx = null;
   switchTab('sheet');
 }
-// この日のシフトに属する打刻(翌日昼12時まで。ただし翌日の出勤打刻以降は含めない)
-function dayEditorPunches() {
-  const { staffId, dateKey } = dayEditorCtx;
+// この日のシフトに属する打刻(翌日昼12時まで)。
+// 前日から日をまたいで続く勤務の朝打刻(夜勤明けの退勤など)と、翌日の出勤以降は含めない。
+function dayShiftPunches(staffId, dateKey) {
   const [y, m, d] = dateKey.split('-').map(Number);
   const base = new Date(y, m - 1, d).getTime();
   const win = DATA.punches
     .filter(p => p.staffId === staffId && p.ts >= base && p.ts < base + 36 * 3600000)
     .sort((a, b) => a.ts - b.ts);
-  let cutoff = base + 36 * 3600000;
-  for (const p of win) {
-    if (p.type === 'in' && p.ts >= base + 86400000) { cutoff = p.ts; break; }
+  // 前日の勤務が0時をまたいで続いているか(前日24時間の打刻で最後にin/outどちらが優勢か)
+  const prev = DATA.punches
+    .filter(p => p.staffId === staffId && p.ts >= base - 86400000 && p.ts < base)
+    .sort((a, b) => a.ts - b.ts);
+  let openFromPrev = false;
+  for (const p of prev) {
+    if (p.type === 'in') openFromPrev = true;
+    else if (p.type === 'out') openFromPrev = false;
   }
-  return win.filter(p => p.ts < cutoff);
+  let start = 0;
+  if (openFromPrev) {
+    // この日の最初のin以前にある退勤・休憩打刻は前日分 → 最初のoutの直後まで読み飛ばす
+    let i = 0;
+    while (i < win.length && win[i].type !== 'in') {
+      const wasOut = win[i].type === 'out';
+      i++;
+      if (wasOut) break;
+    }
+    start = i;
+  }
+  let cutoff = base + 36 * 3600000;
+  for (let i = start; i < win.length; i++) {
+    if (win[i].type === 'in' && win[i].ts >= base + 86400000) { cutoff = win[i].ts; break; }
+  }
+  return win.slice(start).filter(p => p.ts < cutoff);
+}
+function dayEditorPunches() {
+  return dayShiftPunches(dayEditorCtx.staffId, dayEditorCtx.dateKey);
+}
+function replaceDayPunches(staffId, dateKey, newPunches) {
+  const olds = new Set(dayShiftPunches(staffId, dateKey).map(p => p.id));
+  DATA.punches = DATA.punches.filter(p => !olds.has(p.id));
+  DATA.punches.push(...newPunches);
 }
 function renderDayEditor() {
   const { staffId, dateKey } = dayEditorCtx;
@@ -1417,9 +1598,7 @@ function deFillPattern() {
   document.getElementById('de-next').checked = parseHM(pat.end) <= parseHM(pat.start);
 }
 function deReplaceDayPunches(newPunches) {
-  const olds = new Set(dayEditorPunches().map(p => p.id));
-  DATA.punches = DATA.punches.filter(p => !olds.has(p.id));
-  DATA.punches.push(...newPunches);
+  replaceDayPunches(dayEditorCtx.staffId, dayEditorCtx.dateKey, newPunches);
   saveData();
 }
 function deSaveSimple() {
