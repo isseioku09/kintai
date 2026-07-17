@@ -249,6 +249,7 @@
   <div class="admin-tabs">
     <button data-tab="summary" class="active" onclick="switchTab('summary')">ダッシュボード</button>
     <button data-tab="sheet" onclick="switchTab('sheet')">出勤簿</button>
+    <button data-tab="paid" onclick="switchTab('paid')">有給管理</button>
     <button data-tab="staff" onclick="switchTab('staff')">職員管理</button>
     <button data-tab="settings" onclick="switchTab('settings')">設定</button>
     <button data-tab="backup" onclick="switchTab('backup')">バックアップ</button>
@@ -314,7 +315,7 @@ function loadData() {
     if (!raw) return structuredClone(DEFAULT_DATA);
     const d = JSON.parse(raw);
     d.settings = Object.assign(structuredClone(DEFAULT_DATA.settings), d.settings || {});
-    d.staff = (d.staff || []).map(s => Object.assign({ kana: '', patternId: '', office: '' }, s));
+    d.staff = (d.staff || []).map(s => Object.assign({ kana: '', patternId: '', office: '', hireDate: '', weeklyDays: 5, paidAdjust: 0 }, s));
     d.punches = d.punches || [];
     d.dayMarks = d.dayMarks || [];
     d.dayPatterns = d.dayPatterns || [];
@@ -571,6 +572,52 @@ function setDayMark(staffId, dateKey, kind) {
   switchTab(currentTab);
 }
 
+/* ================= 有給休暇の自動計算 ================= */
+// 法定付与日数表: 週所定労働日数ごと、付与回数(入社6ヶ月+n年)ごと
+const PAID_GRANT_TABLE = {
+  5: [10, 11, 12, 14, 16, 18, 20], // 週5日以上(または週30h以上)
+  4: [7, 8, 9, 10, 12, 13, 15],
+  3: [5, 6, 6, 8, 9, 10, 11],
+  2: [3, 4, 4, 5, 6, 6, 7],
+  1: [1, 2, 2, 2, 3, 3, 3],
+};
+function addMonthsKey(dateStr, months) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return fmtDateKey(new Date(y, m - 1 + months, d));
+}
+// 有給の付与・取得・残日数を計算(時効2年、FIFO消化)
+function paidLeaveStatus(staff, todayKey) {
+  todayKey = todayKey || fmtDateKey(new Date());
+  if (!staff || !staff.hireDate) return null;
+  const table = PAID_GRANT_TABLE[staff.weeklyDays || 5] || PAID_GRANT_TABLE[5];
+  const grants = [];
+  let next = null;
+  for (let n = 0; n < 100; n++) {
+    const gDate = addMonthsKey(staff.hireDate, 6 + n * 12);
+    const days = table[Math.min(n, table.length - 1)];
+    if (gDate > todayKey) { next = { date: gDate, days }; break; }
+    grants.push({ date: gDate, days, expire: addMonthsKey(gDate, 24), remain: days });
+  }
+  // 取得日を古い付与分から順に消化(2年の時効内のみ)
+  const taken = DATA.dayMarks
+    .filter(mk => mk.staffId === staff.id && mk.kind === '有給')
+    .map(mk => mk.date).sort();
+  let unmatched = 0;
+  for (const td of taken) {
+    const g = grants.find(g => g.remain > 0 && g.date <= td && td < g.expire);
+    if (g) g.remain--; else unmatched++;
+  }
+  const balance = grants.filter(g => todayKey < g.expire).reduce((a, g) => a + g.remain, 0)
+    + (Number(staff.paidAdjust) || 0);
+  const latest = grants[grants.length - 1] || null;
+  const periodTaken = latest ? taken.filter(dk => dk >= latest.date).length : 0;
+  // 年5日取得義務: 直近の付与が10日以上の場合、付与日から1年以内に5日
+  const obligation = latest && latest.days >= 10
+    ? { need: 5, taken: Math.min(periodTaken, 5), deadline: addMonthsKey(latest.date, 12) }
+    : null;
+  return { grants, latest, next, balance, periodTaken, obligation, unmatched, takenTotal: taken.length };
+}
+
 /* ================= 五十音インデックス ================= */
 const KANA_ROWS = [
   ['あ', 'あいうえおぁぃぅぇぉヴ'],
@@ -820,6 +867,7 @@ function switchTab(tab) {
   const p = document.getElementById('admin-panel');
   if (tab === 'summary') renderSummaryTab(p);
   else if (tab === 'sheet') renderSheetTab(p);
+  else if (tab === 'paid') renderPaidTab(p);
   else if (tab === 'staff') renderStaffTab(p);
   else if (tab === 'settings') renderSettingsTab(p);
   else if (tab === 'backup') renderBackupTab(p);
@@ -1658,6 +1706,62 @@ function deAddPunch() {
   saveData(); renderDayEditor();
 }
 
+/* ---------- 有給管理タブ ---------- */
+function renderPaidTab(panel) {
+  const todayKey = fmtDateKey(new Date());
+  const active = DATA.staff.filter(s => s.active);
+  const rows = active.map(s => {
+    const st = paidLeaveStatus(s, todayKey);
+    const hireInput = `<input type="date" value="${escapeHtml(s.hireDate || '')}" onchange="editStaff('${s.id}','hireDate',this.value);switchTab('paid')">`;
+    const weekSel = `<select onchange="editStaff('${s.id}','weeklyDays',this.value);switchTab('paid')">
+      ${[[5, '週5日以上'], [4, '週4日'], [3, '週3日'], [2, '週2日'], [1, '週1日']].map(([v, l]) =>
+        `<option value="${v}" ${Number(s.weeklyDays || 5) === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+    const adjInput = `<input type="number" step="0.5" value="${Number(s.paidAdjust) || 0}" style="width:64px" onchange="editStaff('${s.id}','paidAdjust',this.value);switchTab('paid')">`;
+    if (!st) {
+      return `<tr>
+        <td>${escapeHtml(s.name)}</td>
+        <td>${hireInput}</td>
+        <td>${weekSel}</td>
+        <td colspan="4" class="muted">入社日を入力すると自動計算されます</td>
+        <td>${adjInput}</td>
+      </tr>`;
+    }
+    const years = ((new Date(todayKey) - new Date(s.hireDate)) / (365.25 * 86400000));
+    const balCls = st.balance <= 0 ? 'warn' : '';
+    const detail = st.grants.filter(g => todayKey < g.expire)
+      .map(g => `${g.date.slice(0, 7).replace('-', '/')}付与 残${g.remain}日`).join('・') || 'ー';
+    let dutyCell = 'ー';
+    if (st.obligation) {
+      const ok = st.obligation.taken >= 5;
+      dutyCell = `<span class="${ok ? '' : 'ot-warn'}">${st.obligation.taken}/5日${ok ? ' ✓' : ''}</span>
+        <span class="muted" style="font-size:11px">(期限 ${st.obligation.deadline.slice(0, 7).replace('-', '/')})</span>`;
+    }
+    return `<tr>
+      <td>${escapeHtml(s.name)}</td>
+      <td>${hireInput}</td>
+      <td>${weekSel}</td>
+      <td class="num"><b class="${balCls}" style="font-size:16px">${st.balance}</b> 日
+        <span class="muted" style="font-size:11px">${detail}</span></td>
+      <td>${dutyCell}</td>
+      <td class="num">${st.next ? `${st.next.date.replace(/-/g, '/')}に+${st.next.days}日` : 'ー'}</td>
+      <td class="num muted">${years.toFixed(1)}年</td>
+      <td>${adjInput}</td>
+    </tr>`;
+  });
+  panel.innerHTML = `
+    <div class="table-wrap"><table>
+      <tr><th>氏名</th><th>入社日</th><th>週所定</th><th>有給残</th><th>年5日義務</th><th>次回付与</th><th>勤続</th><th>調整(日)</th></tr>
+      ${rows.join('')}
+    </table></div>
+    <div class="note">
+      <b>自動計算のルール(労働基準法どおり)</b>: 入社6ヶ月後に付与、以降1年ごとに増加(週5日: 10→11→12→14→16→18→20日、パートは週所定日数に応じた比例付与)。
+      未使用分は<b>2年で時効消滅</b>し、取得は古い付与分から順に消化します。<br>
+      <b>取得日数は出勤簿の「有給」マークから自動集計</b>されます。
+      <b>年5日義務</b>: 10日以上付与された職員は付与日から1年以内に5日の取得が法律上の義務です(未達は橙色で表示)。<br>
+      <b>調整(日)</b>: このシステム導入前に取得済みの日数(マイナス)や、会社独自の特別付与(プラス)の補正に使ってください。残日数にそのまま加算されます。
+    </div>`;
+}
+
 /* ---------- 職員管理タブ ---------- */
 function patternSelectHtml(staff) {
   const opts = DATA.workPatterns.map(p =>
@@ -1688,10 +1792,10 @@ function renderStaffTab(panel) {
       <button class="primary-btn" onclick="addStaff()">追加</button>
     </div>
     <h3>一括登録(Excelから貼り付け)</h3>
-    <div class="note">Excelの名簿から「<b>従業員番号・氏名・ふりがな・勤務体系・事業所</b>」の順に列をコピーして、下に貼り付けてください(1行1人。見出し行は自動でスキップ)。
-    勤務体系は下の一覧の名称と一致すれば自動で割り当てられます。既存の従業員番号は上書き更新されます。</div>
+    <div class="note">Excelの名簿から「<b>従業員番号・氏名・ふりがな・勤務体系・事業所・入社日</b>」の順に列をコピーして、下に貼り付けてください(1行1人。見出し行は自動でスキップ。後ろの列は省略可)。
+    勤務体系は下の一覧の名称と一致すれば自動で割り当てられます。既存の従業員番号は上書き更新されます。入社日を入れると有給管理タブで自動計算が始まります。</div>
     <textarea id="bulk-staff" rows="6" style="width:100%;font-size:14px;font-family:inherit;border:1px solid var(--border);border-radius:8px;padding:8px"
-      placeholder="001	山田花子	やまだ はなこ	日勤A	○○デイサービス"></textarea>
+      placeholder="001	山田花子	やまだ はなこ	日勤A	○○デイサービス	2020/4/1"></textarea>
     <div class="form-row"><button class="primary-btn" onclick="bulkImportStaff()">一括登録する</button></div>
     <div class="note">従業員番号はマネーフォワード給与に登録されている従業員番号と一致させてください(CSV取込時の照合キーになります)。<br>
     ふりがなを入れると打刻画面が五十音順に並び、職員が多い場合は「あかさたな」の絞り込みタブが表示されます。<br>
@@ -1766,20 +1870,25 @@ function bulkImportStaff() {
     if (!line.trim()) continue;
     const cells = (line.includes('\t') ? line.split('\t') : parseCsvLine(line)).map(c => c.trim());
     if (cells.some(c => c === '氏名' || c === '従業員番号')) continue; // 見出し行
-    const [code, name, kana = '', patName = '', office = ''] = cells;
+    const [code, name, kana = '', patName = '', office = '', hireRaw = ''] = cells;
     if (!name) continue;
     const pattern = patName ? DATA.workPatterns.find(p => p.name === patName) : null;
     if (patName && !pattern) unknownPatterns.add(patName);
+    // 入社日: 2020/4/1 や 2020-04-01 を正規化
+    let hireDate = '';
+    const hm = hireRaw.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+    if (hm) hireDate = hm[1] + '-' + pad2(Number(hm[2])) + '-' + pad2(Number(hm[3]));
     const existing = code && DATA.staff.find(s => s.code === code);
     if (existing) {
       existing.name = name;
       if (kana) existing.kana = kana;
       if (pattern) existing.patternId = pattern.id;
       if (office) existing.office = office;
+      if (hireDate) existing.hireDate = hireDate;
       existing.active = true;
       updated++;
     } else {
-      DATA.staff.push({ id: uid(), code: code || '', name, kana, office, patternId: pattern ? pattern.id : '', active: true });
+      DATA.staff.push({ id: uid(), code: code || '', name, kana, office, hireDate, weeklyDays: 5, paidAdjust: 0, patternId: pattern ? pattern.id : '', active: true });
       added++;
     }
   }
