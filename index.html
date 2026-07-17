@@ -1785,6 +1785,7 @@ function renderShiftTab(panel) {
   panel.innerHTML = `
     <div class="form-row">
       <label>対象月:</label>${monthSelectorHtml('shift')}${officeSelector}
+      <button class="small-btn" onclick="copyShiftFromPrev()">前月からコピー</button>
       <button class="small-btn" onclick="printShiftTable()">シフト表を印刷/PDF</button>
     </div>
     <div class="note">セルで体系(出勤)や公休・有給を選ぶと即保存されます。ここで組んだシフトは<b>そのまま当日の勤怠計算</b>(残業基準・自動休憩・遅刻早退)に使われ、
@@ -1812,6 +1813,38 @@ function shiftCellChanged(sel) {
   const rt = document.getElementById('shift-row-' + staffId);
   if (rt) rt.textContent = row || '';
 }
+// 前月のシフトをコピー: 4週間前(同じ曜日)の内容を対象月度に複製
+function copyShiftFromPrev() {
+  const pr = periodRange(adminMonth.y, adminMonth.m);
+  const active = DATA.staff.filter(s => s.active &&
+    (adminOfficeFilter === 'all' || (s.office || '').trim() === adminOfficeFilter));
+  if (!active.length) { alert('対象の職員がいません'); return; }
+  if (!confirm(`${pr.label}(${fmtMD(pr.fromDate)}〜${fmtMD(pr.toDate)})のシフトに、\n4週間前の同じ曜日の内容をコピーします。\n\n表示中の職員${active.length}名の既存のシフト予定は上書きされます(打刻済みの日は変更しません)。よろしいですか?`)) return;
+  // コピー元のスナップショット(コピー先と期間が重なっても連鎖コピーしないように)
+  const marksSnap = new Map(DATA.dayMarks.map(x => [x.staffId + '|' + x.date, x.kind]));
+  const patsSnap = new Map(DATA.dayPatterns.map(x => [x.staffId + '|' + x.date, x.patternId]));
+  let copied = 0, skippedPunched = 0;
+  for (const s of active) {
+    for (let ts0 = pr.from; ts0 < pr.to; ts0 += 86400000) {
+      const dateKey = fmtDateKey(new Date(ts0));
+      // 4週間前(同じ曜日)。対象期間内に食い込む場合は5週間前を使う
+      let srcTs = ts0 - 28 * 86400000;
+      if (srcTs >= pr.from) srcTs -= 7 * 86400000;
+      const srcKey = fmtDateKey(new Date(srcTs));
+      if (dayShiftPunches(s.id, dateKey).length) { skippedPunched++; continue; }
+      DATA.dayMarks = DATA.dayMarks.filter(x => !(x.staffId === s.id && x.date === dateKey));
+      DATA.dayPatterns = DATA.dayPatterns.filter(x => !(x.staffId === s.id && x.date === dateKey));
+      const srcPat = patsSnap.get(s.id + '|' + srcKey);
+      const srcMark = marksSnap.get(s.id + '|' + srcKey);
+      if (srcPat) { DATA.dayPatterns.push({ id: uid(), staffId: s.id, date: dateKey, patternId: srcPat }); copied++; }
+      else if (srcMark) { DATA.dayMarks.push({ id: uid(), staffId: s.id, date: dateKey, kind: srcMark }); copied++; }
+    }
+  }
+  saveData();
+  switchTab('shift');
+  alert(`コピーしました(${copied}件)${skippedPunched ? `\n打刻済みの日 ${skippedPunched}件はそのままにしました` : ''}`);
+}
+
 function printShiftTable() {
   const { y, m } = adminMonth;
   const pr = periodRange(y, m);
