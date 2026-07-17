@@ -194,6 +194,15 @@
   .ot-over { color: var(--red); font-weight: 700; }
   .alert-link { background: var(--red-soft); color: var(--red); padding: 6px 12px; font-size: 13px; font-weight: 600; margin: 2px 4px 2px 0; }
 
+  /* シフト表 */
+  .shift-table th, .shift-table td { padding: 3px 4px; text-align: center; }
+  .shift-table select { font-size: 11px; padding: 3px 1px; width: 62px; border-radius: 6px; }
+  .shift-table td:first-child, .shift-table th:first-child {
+    position: sticky; left: 0; background: #fff; z-index: 2; text-align: left; white-space: nowrap; font-weight: 600;
+  }
+  .shift-table th:first-child { background: #f1f5f9; z-index: 3; }
+  .shift-table tr.shift-totals td { background: #f1f5f9; font-weight: 700; }
+
   /* 出勤簿 */
   .day-sat { color: var(--primary); }
   .day-sun, .day-holiday { color: var(--red); }
@@ -249,6 +258,7 @@
   <div class="admin-tabs">
     <button data-tab="summary" class="active" onclick="switchTab('summary')">ダッシュボード</button>
     <button data-tab="sheet" onclick="switchTab('sheet')">出勤簿</button>
+    <button data-tab="shift" onclick="switchTab('shift')">シフト</button>
     <button data-tab="paid" onclick="switchTab('paid')">有給管理</button>
     <button data-tab="staff" onclick="switchTab('staff')">職員管理</button>
     <button data-tab="settings" onclick="switchTab('settings')">設定</button>
@@ -721,6 +731,16 @@ function renderPunchScreen() {
     } else if (last && last.type === 'out' && isToday(last.ts)) {
       cls += ' done';
       chip = '退勤済 ' + fmtTime(new Date(last.ts));
+    } else {
+      // 未出勤: 今日のシフト予定を表示
+      const todayKey = fmtDateKey(new Date());
+      const mark = markOf(s.id, todayKey);
+      const ov = dayPatternOverride(s.id, todayKey);
+      if (mark) chip = mark.kind;
+      else if (ov) {
+        const p = DATA.workPatterns.find(p => p.id === ov.patternId);
+        if (p) chip = '予定 ' + p.name;
+      }
     }
     btn.className = cls;
     btn.innerHTML = `<span class="name">${escapeHtml(s.name)}</span><span class="chip">${escapeHtml(chip)}</span>`;
@@ -867,6 +887,7 @@ function switchTab(tab) {
   const p = document.getElementById('admin-panel');
   if (tab === 'summary') renderSummaryTab(p);
   else if (tab === 'sheet') renderSheetTab(p);
+  else if (tab === 'shift') renderShiftTab(p);
   else if (tab === 'paid') renderPaidTab(p);
   else if (tab === 'staff') renderStaffTab(p);
   else if (tab === 'settings') renderSettingsTab(p);
@@ -876,7 +897,7 @@ function switchTab(tab) {
 function monthSelectorHtml(idPrefix) {
   const opts = [];
   const cur = currentPeriodYM();
-  for (let i = 0; i < 14; i++) {
+  for (let i = -2; i < 14; i++) { // 2ヶ月先(シフト作成用)〜過去14ヶ月
     const d = new Date(cur.y, cur.m - 1 - i, 1);
     const y = d.getFullYear(), m = d.getMonth() + 1;
     const pr = periodRange(y, m);
@@ -1704,6 +1725,124 @@ function deAddPunch() {
   if (!ts) { alert('日時を入力してください'); return; }
   DATA.punches.push({ id: uid(), staffId: dayEditorCtx.staffId, type, ts: new Date(ts).getTime() });
   saveData(); renderDayEditor();
+}
+
+/* ---------- シフトタブ(事前のシフト作成) ---------- */
+function renderShiftTab(panel) {
+  const { y, m } = adminMonth;
+  const pr = periodRange(y, m);
+  const youbiName = ['日', '月', '火', '水', '木', '金', '土'];
+
+  const offices = [...new Set(DATA.staff.filter(s => s.active).map(s => (s.office || '').trim()).filter(Boolean))];
+  if (adminOfficeFilter !== 'all' && !offices.includes(adminOfficeFilter)) adminOfficeFilter = 'all';
+  const officeSelector = offices.length ? `
+      <label style="min-width:auto">事業所:</label>
+      <select onchange="adminOfficeFilter=this.value;switchTab('shift')">
+        <option value="all">全事業所</option>
+        ${offices.map(o => `<option value="${escapeHtml(o)}" ${adminOfficeFilter === o ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
+      </select>` : '';
+  const active = DATA.staff.filter(s => s.active &&
+    (adminOfficeFilter === 'all' || (s.office || '').trim() === adminOfficeFilter));
+
+  if (!DATA.workPatterns.length) {
+    panel.innerHTML = '<div class="note">シフトを作るには、まず職員管理タブで勤務体系(日勤・夜勤など)を登録してください。</div>';
+    return;
+  }
+
+  const days = [];
+  for (let ts0 = pr.from; ts0 < pr.to; ts0 += 86400000) days.push(new Date(ts0));
+
+  const headCells = days.map(dt => {
+    const w = dt.getDay();
+    const cls = w === 0 ? 'day-sun' : (w === 6 ? 'day-sat' : '');
+    return `<th class="${cls}">${dt.getMonth() + 1}/${dt.getDate()}<br>${youbiName[w]}</th>`;
+  }).join('');
+
+  const bodyRows = active.map(s => {
+    let rowCount = 0;
+    const cells = days.map(dt => {
+      const dateKey = fmtDateKey(dt);
+      const mark = markOf(s.id, dateKey);
+      const ov = dayPatternOverride(s.id, dateKey);
+      const val = mark ? mark.kind : (ov ? 'P:' + ov.patternId : '');
+      if (val.startsWith('P:')) rowCount++;
+      const opts = [
+        `<option value="" ${val === '' ? 'selected' : ''}>ー</option>`,
+        ...DATA.workPatterns.map(p => `<option value="P:${p.id}" ${val === 'P:' + p.id ? 'selected' : ''}>${escapeHtml(p.name)}</option>`),
+        ...['公休', '有給', '欠勤'].map(k => `<option value="${k}" ${val === k ? 'selected' : ''}>${k}</option>`),
+      ].join('');
+      return `<td><select class="shift-cell" data-staff="${s.id}" data-date="${dateKey}" onchange="shiftCellChanged(this)">${opts}</select></td>`;
+    }).join('');
+    return `<tr><td>${escapeHtml(s.name)}</td>${cells}<td class="num" id="shift-row-${s.id}">${rowCount || ''}</td></tr>`;
+  }).join('');
+
+  const totalCells = days.map(dt => {
+    const dateKey = fmtDateKey(dt);
+    const c = active.filter(s => !markOf(s.id, dateKey) && dayPatternOverride(s.id, dateKey)).length;
+    return `<td class="num" id="shift-total-${dateKey}">${c || ''}</td>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="form-row">
+      <label>対象月:</label>${monthSelectorHtml('shift')}${officeSelector}
+      <button class="small-btn" onclick="printShiftTable()">シフト表を印刷/PDF</button>
+    </div>
+    <div class="note">セルで体系(出勤)や公休・有給を選ぶと即保存されます。ここで組んだシフトは<b>そのまま当日の勤怠計算</b>(残業基準・自動休憩・遅刻早退)に使われ、
+    打刻画面の職員ボタンにも「予定」として表示されます。一番下は日ごとの出勤予定人数です。</div>
+    <div class="table-wrap"><table class="shift-table">
+      <tr><th>職員</th>${headCells}<th>勤務日数</th></tr>
+      ${bodyRows}
+      <tr class="shift-totals"><td>出勤予定</td>${totalCells}<td></td></tr>
+    </table></div>`;
+}
+function shiftCellChanged(sel) {
+  const staffId = sel.dataset.staff, dateKey = sel.dataset.date, v = sel.value;
+  DATA.dayMarks = DATA.dayMarks.filter(x => !(x.staffId === staffId && x.date === dateKey));
+  DATA.dayPatterns = DATA.dayPatterns.filter(x => !(x.staffId === staffId && x.date === dateKey));
+  if (v.startsWith('P:')) DATA.dayPatterns.push({ id: uid(), staffId, date: dateKey, patternId: v.slice(2) });
+  else if (v) DATA.dayMarks.push({ id: uid(), staffId, date: dateKey, kind: v });
+  saveData();
+  // 再描画せずに集計セルだけ更新(スクロール位置と入力を保つ)
+  let col = 0;
+  document.querySelectorAll(`select.shift-cell[data-date="${dateKey}"]`).forEach(el => { if (el.value.startsWith('P:')) col++; });
+  const ct = document.getElementById('shift-total-' + dateKey);
+  if (ct) ct.textContent = col || '';
+  let row = 0;
+  document.querySelectorAll(`select.shift-cell[data-staff="${staffId}"]`).forEach(el => { if (el.value.startsWith('P:')) row++; });
+  const rt = document.getElementById('shift-row-' + staffId);
+  if (rt) rt.textContent = row || '';
+}
+function printShiftTable() {
+  const { y, m } = adminMonth;
+  const pr = periodRange(y, m);
+  const youbiName = ['日', '月', '火', '水', '木', '金', '土'];
+  const active = DATA.staff.filter(s => s.active &&
+    (adminOfficeFilter === 'all' || (s.office || '').trim() === adminOfficeFilter));
+  const days = [];
+  for (let ts0 = pr.from; ts0 < pr.to; ts0 += 86400000) days.push(new Date(ts0));
+  const head = days.map(dt => `<th>${dt.getDate()}<br>${youbiName[dt.getDay()]}</th>`).join('');
+  const body = active.map(s => {
+    const cells = days.map(dt => {
+      const dateKey = fmtDateKey(dt);
+      const mark = markOf(s.id, dateKey);
+      if (mark) return `<td>${mark.kind === '公休' ? '公' : mark.kind === '有給' ? '有' : '欠'}</td>`;
+      const ov = dayPatternOverride(s.id, dateKey);
+      const p = ov ? DATA.workPatterns.find(p => p.id === ov.patternId) : null;
+      return `<td>${p ? escapeHtml(p.name.slice(0, 2)) : ''}</td>`;
+    }).join('');
+    return `<tr><td style="text-align:left">${escapeHtml(s.name)}</td>${cells}</tr>`;
+  }).join('');
+  const legend = DATA.workPatterns.map(p => `${escapeHtml(p.name.slice(0, 2))}=${escapeHtml(p.name)}(${p.start}〜${p.end})`).join('　');
+  document.getElementById('print-area').innerHTML = `
+    <div class="print-sheet">
+      <div class="print-head"><div>
+        <div class="print-title">シフト表　${pr.label}(${fmtMD(pr.fromDate)}〜${fmtMD(pr.toDate)})</div>
+        <div class="print-meta">${escapeHtml(adminOfficeFilter !== 'all' ? adminOfficeFilter : (DATA.settings.officeName || ''))}</div>
+      </div></div>
+      <table><tr><th>職員</th>${head}</tr>${body}</table>
+      <div class="print-note">${legend}　公=公休 有=有給 欠=欠勤　/　用紙を横向きにすると見やすく印刷できます</div>
+    </div>`;
+  window.print();
 }
 
 /* ---------- 有給管理タブ ---------- */
