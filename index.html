@@ -1185,8 +1185,43 @@ function exportMfKintaiCsv() {
     }
   }
   if (!count) { alert('この月度に出力できる打刻がありません'); return; }
-  // MF勤怠のインポートはBOMなしUTF-8で出力
-  downloadCsv(`MF勤怠打刻_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows, true);
+  const useSjis = confirm('文字コードを選んでください。\n\n【OK】 Shift-JIS — Windowsのパソコンで取り込む場合\n【キャンセル】 UTF-8 — Macで取り込む場合');
+  downloadCsvEncoded(`MF勤怠打刻_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows, useSjis);
+}
+
+// Shift-JIS変換(必要時にライブラリを読み込み。オフライン等で失敗したらUTF-8で出力)
+let sjisLibPromise = null;
+function loadSjisLib() {
+  if (window.Encoding) return Promise.resolve(true);
+  if (!sjisLibPromise) {
+    sjisLibPromise = new Promise(resolve => {
+      const sc = document.createElement('script');
+      sc.src = 'https://cdn.jsdelivr.net/npm/encoding-japanese@2.2.0/encoding.min.js';
+      sc.onload = () => resolve(true);
+      sc.onerror = () => resolve(false);
+      document.head.appendChild(sc);
+    });
+  }
+  return sjisLibPromise;
+}
+async function downloadCsvEncoded(filename, rows, useSjis) {
+  const csv = rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
+  let blob = null;
+  if (useSjis) {
+    const ok = await loadSjisLib();
+    if (ok && window.Encoding) {
+      const sjis = Encoding.convert(Encoding.stringToCode(csv), 'SJIS', 'UNICODE');
+      blob = new Blob([new Uint8Array(sjis)], { type: 'text/csv' });
+    } else {
+      alert('Shift-JIS変換の部品を読み込めなかったため、UTF-8で出力します。\n(インターネット接続を確認して再度お試しください)');
+    }
+  }
+  if (!blob) blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 function exportPunchLogCsv() {
