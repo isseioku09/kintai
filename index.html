@@ -948,6 +948,7 @@ function renderSummaryTab(panel) {
       <label>対象月:</label>${monthSelectorHtml('summary')}${officeSelector}
       <button class="primary-btn" onclick="exportCsv()">MF給与用CSVを出力</button>
       <button class="small-btn" onclick="exportDetailCsv()">出勤簿CSV(確認用)</button>
+      <button class="small-btn" onclick="exportMfKintaiCsv()">MF勤怠用CSV(日次打刻)</button>
       <button class="small-btn" onclick="printAllSheets()">出勤簿PDF(全員)</button>
       <button class="small-btn" onclick="exportPunchLogCsv()">打刻ログCSV</button>
     </div>
@@ -984,8 +985,8 @@ function csvEscape(v) {
   v = String(v ?? '');
   return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
 }
-function downloadCsv(filename, rows) {
-  const bom = '﻿';
+function downloadCsv(filename, rows, noBom) {
+  const bom = noBom ? '' : '﻿';
   const csv = bom + rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const a = document.createElement('a');
@@ -1151,6 +1152,41 @@ function exportDetailCsv() {
     }
   }
   downloadCsv(`出勤簿_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows);
+}
+
+// マネーフォワード クラウド勤怠の「日次勤怠データインポート」形式で出力
+// 形式: 従業員番号/苗字/名前/打刻所属日/打刻日/打刻時刻/打刻種別(打刻1件=1行)
+// 夜勤の翌朝退勤は「打刻所属日=出勤日・打刻日=翌日」で表現される
+function exportMfKintaiCsv() {
+  const active = DATA.staff.filter(s => s.active);
+  const pr = periodRange(adminMonth.y, adminMonth.m);
+  const problems = [];
+  const noCode = active.filter(s => !(s.code || '').trim());
+  if (noCode.length) problems.push('従業員番号が未入力: ' + noCode.map(s => s.name).join('、'));
+  const noSpace = active.filter(s => s.name && !/[\s　]/.test(s.name.trim()));
+  if (noSpace.length) problems.push('氏名が「姓 名」のスペース区切りになっていない: ' + noSpace.map(s => s.name).join('、'));
+  if (problems.length && !confirm('⚠ MF勤怠は従業員番号と苗字・名前が完全一致しないと取り込めません。\n\n' + problems.join('\n') +
+    '\n\n(職員管理タブで修正できます)\nこのまま出力しますか?')) return;
+
+  const fmtSlash = ts => { const d = new Date(ts); return d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()); };
+  const rows = [['従業員番号', '苗字', '名前', '打刻所属日', '打刻日', '打刻時刻', '打刻種別']];
+  let count = 0;
+  for (const s of active) {
+    const parts = s.name.trim().split(/[\s　]+/);
+    const sei = parts[0] || '', mei = parts.slice(1).join('');
+    const shifts = buildShifts(s.id, pr.from, pr.to);
+    for (const sh of shifts) {
+      if (sh.in == null) continue;
+      const belong = fmtSlash(sh.in);
+      const emit = (ts, label) => { rows.push([s.code || '', sei, mei, belong, fmtSlash(ts), fmtTime(new Date(ts)), label]); count++; };
+      emit(sh.in, '出勤');
+      for (const [bs, be] of sh.breaks) { emit(bs, '休憩開始'); emit(be, '休憩終了'); }
+      if (sh.out != null) emit(sh.out, '退勤');
+    }
+  }
+  if (!count) { alert('この月度に出力できる打刻がありません'); return; }
+  // MF勤怠のインポートはBOMなしUTF-8で出力
+  downloadCsv(`MF勤怠打刻_${adminMonth.y}-${pad2(adminMonth.m)}.csv`, rows, true);
 }
 
 function exportPunchLogCsv() {
